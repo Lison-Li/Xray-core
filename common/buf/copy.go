@@ -96,8 +96,19 @@ func copyInternal(reader Reader, writer Writer, handler *copyHandler) error {
 				handler(buffer)
 			}
 
-			if werr := writer.WriteMultiBuffer(buffer); werr != nil {
+			// A B05 metered Reader reserves/fsyncs bytes before this call.
+			// Only the return of the delegated Writer can confirm delivery.
+			acceptedSize := buffer.Len()
+			if werr := liB05SafeFinalWriterCall(reader, writer, buffer); werr != nil {
+				if receipt, ok := reader.(interface{ LiOnWriteFailed(error) }); ok {
+					receipt.LiOnWriteFailed(werr)
+				}
 				return writeError{werr}
+			}
+			if receipt, ok := reader.(interface{ LiOnWriteAccepted(int32) error }); ok {
+				if aerr := receipt.LiOnWriteAccepted(acceptedSize); aerr != nil {
+					return writeError{aerr}
+				}
 			}
 		}
 
@@ -131,5 +142,30 @@ func CopyOnceTimeout(reader Reader, writer Writer, timeout time.Duration) error 
 	if err != nil {
 		return err
 	}
+	acceptedSize := mb.Len()
+	if err := liB05SafeFinalWriterCall(reader, writer, mb); err != nil {
+		if receipt, ok := reader.(interface{ LiOnWriteFailed(error) }); ok {
+			receipt.LiOnWriteFailed(err)
+		}
+		return err
+	}
+	if receipt, ok := reader.(interface{ LiOnWriteAccepted(int32) error }); ok {
+		return receipt.LiOnWriteAccepted(acceptedSize)
+	}
+	return nil
+}
+
+
+// liB05SafeFinalWriterCall preserves unknown partial deliveries. Never
+// refund or forge a receipt when a delegate panics after taking ownership.
+func liB05SafeFinalWriterCall(reader Reader, writer Writer, mb MultiBuffer) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if receipt, ok := reader.(interface{ LiOnWriteFailed(error) }); ok {
+				receipt.LiOnWriteFailed(errors.New("B05 final Writer panic: delivery unknown"))
+			}
+			panic(recovered)
+		}
+	}()
 	return writer.WriteMultiBuffer(mb)
 }
