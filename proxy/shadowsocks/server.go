@@ -3,6 +3,7 @@ package shadowsocks
 import (
 	"context"
 	"time"
+	"os"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -90,6 +91,10 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
+	if os.Getenv("XRAYR_LI_B05_STRICT") == "1" &&
+		os.Getenv("XRAYR_LI_B05_LEGACY_SS_TCP_QA") == "1" {
+		inbound.CanSpliceCopy = 0 // Strict QA must not bypass the pinned Writer.
+	}
 
 	switch network {
 	case net.Network_TCP:
@@ -251,17 +256,9 @@ func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dis
 			return errors.New("failed to write response").Base(err)
 		}
 
-		{
-			payload, err := link.Reader.ReadMultiBuffer()
-			if err != nil {
-				return err
-			}
-			if err := responseWriter.WriteMultiBuffer(payload); err != nil {
-				return err
-			}
-		}
-
-		if err := bufferedWriter.SetBuffered(false); err != nil {
+		// The first SS downlink Write is buffered and NOT handled by buf.Copy.
+		// A strict receipt is valid only after the actual buffered TCP flush.
+		if err := liB05QALegacySSFirstFlush(link.Reader, responseWriter, bufferedWriter); err != nil {
 			return err
 		}
 
@@ -297,3 +294,42 @@ func init() {
 		return NewServer(ctx, config.(*ServerConfig))
 	}))
 }
+
+// liB05QALegacySSFirstFlush exists ONLY in this temporary QA module.
+// A successful buffered/middle-layer Write is not a network receipt; first
+// flush must finish before a final-Writer WAL confirmation is permitted.
+// Any short/error/panic is an ambiguous delivery, so notify the shared ledger.
+func liB05QALegacySSFirstFlush(reader buf.Reader, writer buf.Writer, buffered interface{SetBuffered(bool) error}) (err error) {
+    payload, err := reader.ReadMultiBuffer()
+    if err != nil { return err }
+    n := payload.Len()
+    defer func() {
+        if recovered := recover(); recovered != nil {
+            if receipt, ok := reader.(interface{LiOnWriteFailed(error)}); ok {
+                receipt.LiOnWriteFailed(errors.New("B05 legacy SS first TCP Writer panic; delivery ambiguous"))
+            }
+            panic(recovered)
+        }
+    }()
+    if err = writer.WriteMultiBuffer(payload); err != nil {
+        if receipt, ok := reader.(interface{LiOnWriteFailed(error)}); ok {
+            receipt.LiOnWriteFailed(err)
+        }
+        return err
+    }
+    if err = buffered.SetBuffered(false); err != nil {
+        if receipt, ok := reader.(interface{LiOnWriteFailed(error)}); ok {
+            receipt.LiOnWriteFailed(err)
+        }
+        return err
+    }
+    if receipt, ok := reader.(interface{LiOnWriteAccepted(int32) error}); ok {
+        return receipt.LiOnWriteAccepted(n)
+    }
+    return nil
+}
+
+// This exact symbol exists only in the SHA-pinned legacy SS overlay.
+// A separately build-tagged XrayR QA adapter REQUIRES this symbol at compile
+// time, so a generic b05writerqa Copy patch cannot admit legacy strict SS.
+func LiB05LegacySSFirstFlushHookReady() bool { return true }
