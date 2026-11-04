@@ -22,6 +22,7 @@ func CopyConn(ctx context.Context, inboundConn net.Conn, link *transport.Link, s
 	} else {
 		conn.R = &buf.BufferedReader{Reader: link.Reader}
 	}
+	serverConn = liB05MaybeWrapClientConn(link.Reader, serverConn)
 	return ReturnError(bufio.CopyConn(ctx, conn, serverConn))
 }
 
