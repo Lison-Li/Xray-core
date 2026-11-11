@@ -184,6 +184,18 @@ func (h *Handler) RemoveUser(ctx context.Context, email string) error {
 	return nil
 }
 
+// liVMessHasFinalWriterReceipt recognizes only an actual per-Reader
+// accepted/failed Write receipt contract. It does not activate metering,
+// alter the unmetered VMess fast path, or authorize any new inbound.
+// Admission remains in XrayR's separately opted-in IPv4 loopback gate.
+func liVMessHasFinalWriterReceipt(reader buf.Reader) bool {
+	_, ok := reader.(interface {
+		LiOnWriteAccepted(int32) error
+		LiOnWriteFailed(error)
+	})
+	return ok
+}
+
 func transferResponse(timer signal.ActivityUpdater, session *encoding.ServerSession, request *protocol.RequestHeader, response *protocol.ResponseHeader, input buf.Reader, output *buf.BufferedWriter) error {
 	session.EncodeResponseHeader(response, output)
 
@@ -191,13 +203,19 @@ func transferResponse(timer signal.ActivityUpdater, session *encoding.ServerSess
 	if err != nil {
 		return errors.New("failed to start decoding response").Base(err)
 	}
-	{
-		// Optimize for small response packet
+	if !liVMessHasFinalWriterReceipt(input) {
+		// Keep upstream's fast first-response write for ordinary VMess.
+		// A B05 strict metered Reader, however, must NEVER reserve/fsync
+		// its first packet here: this buffered ciphertext write bypasses
+		// the final buf.Copy LiOnWriteAccepted callback, leaving an
+		// unacknowledged durable reservation even when the client
+		// receives a real HTTP response. The metered path must first
+		// disable VMess output buffering, then enter Copy for EVERY
+		// response packet, including the first.
 		data, err := input.ReadMultiBuffer()
 		if err != nil {
 			return err
 		}
-
 		if err := bodyWriter.WriteMultiBuffer(data); err != nil {
 			return err
 		}
