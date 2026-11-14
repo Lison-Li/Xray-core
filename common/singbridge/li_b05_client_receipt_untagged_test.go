@@ -91,3 +91,85 @@ func TestLiB05UntaggedSS2022ShortClientWriteFailsClosed(t *testing.T){
     if !errors.Is(err,io.ErrShortWrite){t.Fatalf("missing true short-Write failure: %v",err)}
     if reader.accepted!=0||reader.failed!=1{t.Fatal("short encrypted client Write was falsely confirmed")}
 }
+
+func TestLiB05All13NativeFinalClientConnWriterProofFailsClosedExceptFullDualGates(t *testing.T) {
+    // Real #43572496570: SS2022 AES128/256 each reserved 3 WAL intents,
+    // only two confirms, leaving real encrypted clients truncated. All13
+    // had disabled the old mutually exclusive single-protocol runtime flags,
+    // so the pinned core returned an UNWRAPPED net.Conn. Verify its actual
+    // Write callback rather than asserting a simulated ACK.
+    flags:=[]string{
+        "XRAYR_LI_B05_STRICT",
+        "XRAYR_LI_B05_PUBLIC_MULTI_NODE",
+        "XRAYR_LI_B05_PUBLIC_MULTI_WRITER_ACK",
+        "XRAYR_LI_B05_PUBLIC_MULTI_VLESS_WS_QA",
+        "XRAYR_LI_B05_PUBLIC_MULTI_VLESS_WS_WRITER_ACK",
+        "XRAYR_LI_B05_PUBLIC_MULTI_VLESS_GRPC_QA",
+        "XRAYR_LI_B05_PUBLIC_MULTI_VLESS_GRPC_WRITER_ACK",
+        "XRAYR_LI_B05_PUBLIC_MULTI_13_NATIVE_QA",
+        "XRAYR_LI_B05_PUBLIC_MULTI_13_NATIVE_WRITER_ACK",
+    }
+    for _,flag:=range flags {t.Setenv(flag,"1")}
+    for _,flag:=range []string{
+        "XRAYR_LI_B05_UNTAGGED_PREVIEW_LOOPBACK",
+        "XRAYR_LI_P04_UNTAGGED_SS2022_TCP_PREVIEW_LOOPBACK",
+        "XRAYR_LI_B05_SS2022_TCP_QA",
+        "XRAYR_LI_B05_VLESS_TCP_QA",
+        "XRAYR_LI_B05_LEGACY_SS_TCP_QA",
+        "XRAYR_LI_B05_HY2_QUIC_QA",
+        "XRAYR_LI_P04_UNTAGGED_VMESS_TCP_PREVIEW_LOOPBACK",
+        "XRAYR_LI_P04_UNTAGGED_VMESS_WS_PREVIEW_LOOPBACK",
+        "XRAYR_LI_P04_UNTAGGED_VMESS_GRPC_PREVIEW_LOOPBACK",
+    } {t.Setenv(flag,"0")}
+    if !liB05All13NativeSS2022ClientReceiptEligible() {t.Fatal("actual 13-native all-ack flag denied")}
+    probe:=func(t *testing.T,enabled bool) {
+        t.Helper()
+        a,b:=net.Pipe()
+        defer a.Close()
+        defer b.Close()
+        marker:=&b05OrdinarySS2022ProofReader{ready:true}
+        wrapped:=liB05MaybeWrapClientConn(marker,a)
+        if enabled==(wrapped==a) {t.Fatalf("13-native proof wrapper active=%v required=%v",wrapped!=a,enabled)}
+        payload:=[]byte("real encrypted Write receipt")
+        done:=make(chan error,1)
+        go func() {p:=make([]byte,len(payload));_,err:=io.ReadFull(b,p);done<-err}()
+        n,err:=wrapped.Write(payload)
+        if err!=nil || n!=len(payload) {t.Fatalf("real net.Pipe.Write failed %v",err)}
+        if err=<-done;err!=nil {t.Fatal(err)}
+        if enabled {
+            if marker.accepted!=1 || marker.failed!=0 || marker.bytes!=int32(len(payload)) {
+                t.Fatal("all13 real encrypted socket Write missed exactly one receipt")
+            }
+        } else if marker.accepted!=0 || marker.failed!=0 {
+            t.Fatal("incomplete gate generated fake encrypted client receipt")
+        }
+    }
+    t.Run("real_all13_native_conn_write",func(t *testing.T){probe(t,true)})
+    for _,flag:=range flags {
+        t.Run("missing_"+flag,func(t *testing.T){
+            t.Setenv(flag,"0")
+            if liB05All13NativeSS2022ClientReceiptEligible() {t.Fatal("partial gate succeeded")}
+            probe(t,false)
+        })
+    }
+    for _,flag:=range []string{
+        "XRAYR_LI_B05_UNTAGGED_PREVIEW_LOOPBACK",
+        "XRAYR_LI_P04_UNTAGGED_SS2022_TCP_PREVIEW_LOOPBACK",
+        "XRAYR_LI_B05_SS2022_TCP_QA",
+        "XRAYR_LI_B05_LEGACY_SS_TCP_QA",
+        "XRAYR_LI_P04_UNTAGGED_VMESS_GRPC_PREVIEW_LOOPBACK",
+    } {
+        t.Run("mixed_"+flag,func(t *testing.T){
+            t.Setenv(flag,"1")
+            if liB05All13NativeSS2022ClientReceiptEligible(){t.Fatal("mixed native proof gate succeeded")}
+            probe(t,false)
+        })
+    }
+    t.Run("unmarked_reader",func(t *testing.T){
+        a,b:=net.Pipe();defer a.Close();defer b.Close()
+        if liB05MaybeWrapClientConn(&b05OrdinarySS2022ProofReader{ready:false},a)!=a {
+            t.Fatal("unmarked plaintext reader claimed client Writer ACK")
+        }
+    })
+    t.Log("B05_ALL13_SS2022_REAL_ENCRYPTED_CLIENT_WRITE_CALLBACK_DUAL_ACK_9_NEGATIVES=PASS")
+}
