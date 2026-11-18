@@ -201,6 +201,13 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 	}
 
 	if meta.GlobalID != [8]byte{} { // MUST ignore empty Global ID
+		// GlobalID is transmitted by the remote client and is NOT proof of
+		// who owns the existing UDP egress connection. Require the real
+		// inbound authentication record before touching the shared cache.
+		owner, ownerOK := liB05XUDPOwnerFromContext(ctx, meta.Target)
+		if !ownerOK {
+			return errors.New("XUDP session refused: missing authenticated owner, node or UDP destination")
+		}
 		mb, err := NewPacketReader(reader, &meta.Target).ReadMultiBuffer()
 		if err != nil {
 			return err
@@ -208,12 +215,21 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 		XUDPManager.Lock()
 		x := XUDPManager.Map[meta.GlobalID]
 		if x == nil {
-			x = &XUDP{GlobalID: meta.GlobalID}
+			x = &XUDP{GlobalID: meta.GlobalID, liB05Owner: owner}
 			XUDPManager.Map[meta.GlobalID] = x
 			XUDPManager.Unlock()
 		} else {
+			if !x.liB05SameAuthenticatedOwner(owner) {
+				// Never close/replace the original owner's connection or
+				// accept even one attacker byte into its original outbound
+				// pipe; a wrong owner's forged GlobalID is not a reconnect.
+				XUDPManager.Unlock()
+				buf.ReleaseMulti(mb)
+				return errors.New("XUDP authenticated node/user/destination mismatch: refuse existing egress")
+			}
 			if x.Status == Initializing { // nearly impossible
 				XUDPManager.Unlock()
+				buf.ReleaseMulti(mb)
 				errors.LogWarningInner(ctx, errors.New("conflict"), "XUDP hit ", meta.GlobalID)
 				// It's not a good idea to return an err here, so just let client wait.
 				// Client will receive an End frame after sending a Keep frame.
