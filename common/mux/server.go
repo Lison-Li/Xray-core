@@ -116,6 +116,14 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 	}
 
 	writer.Close()
+	// A strict B05 Reader has to observe completion of the *entire* native
+	// mux response Writer, including its final End frame, before a different
+	// XUDP session can reuse this global ID. The caller of Session.Close
+	// holds the session-manager lock: signal before s.Close(false), which
+	// otherwise could deadlock waiting for that same manager lock.
+	if finished, ok := s.input.(interface{ LiB05MuxCopyFinished() }); ok {
+		finished.LiB05MuxCopyFinished()
+	}
 	s.Close(false)
 }
 
