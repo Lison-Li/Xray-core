@@ -14,10 +14,20 @@ import (
 type liB05XUDPVerifiedPipeWrapper struct {
     buf.Reader
     original *pipe.Reader
+    receipt <-chan struct{}
 }
 
 func (w *liB05XUDPVerifiedPipeWrapper) LiB05MuxPipeReader() *pipe.Reader {
     return w.original
+}
+
+// Test-only receipt synchronization; the actual XrayR implementation
+// checks an fsynced reservation in its B05 reader, not this channel.
+func (w *liB05XUDPVerifiedPipeWrapper) LiB05MuxAwaitWriterReceipt(wait time.Duration) bool {
+    select {
+    case <-w.receipt: return true
+    case <-time.After(wait): return false
+    }
 }
 
 type liB05XUDPUnknownPipeWrapper struct {
@@ -50,9 +60,15 @@ func TestLiB05RealMuxXUDPWrappedVerifiedPipeReaderCloseKeepsReconnectState(t *te
     raw, writer:=pipe.New()
     // This matches real B05 final Writer metering: wrapper.Reader delegates
     // original raw transport pipe while owning the post-Writer WAL intent.
-    wrapper:=&liB05XUDPVerifiedPipeWrapper{Reader:raw,original:raw}
+    receipt:=make(chan struct{})
+    wrapper:=&liB05XUDPVerifiedPipeWrapper{Reader:raw,original:raw,receipt:receipt}
     session,x:=liB05XUDPCloseTestSession(t,wrapper,writer,231)
+    go func(){time.Sleep(35*time.Millisecond);close(receipt)}()
+    began:=time.Now()
     if err:=session.Close(false);err!=nil{t.Fatal(err)}
+    if time.Since(began)<30*time.Millisecond {
+        t.Fatal("XUDP close used Gosched rather than waiting for actual receipt")
+    }
     if !session.closed || x.Status!=Expiring {
         t.Fatal("actual XUDP wrapped Close failed to enter reconnect grace state")
     }
@@ -93,4 +109,26 @@ func TestLiB05RealMuxXUDPUnknownReaderFailsClosedWithoutPanic(t *testing.T){
         t.Fatal("unverified XUDP Reader wrongly entered reconnect grace")
     }
     t.Log("B05_XUDP_UNVERIFIED_READER_NO_PANIC_NO_GLOBAL_ID_REUSE=PASS")
+}
+
+func TestLiB05RealMuxXUDPWrappedPendingReceiptTimesOutAndDropsReuse(t *testing.T){
+    raw,writer:=pipe.New()
+    // In the real B05 Reader a pending reservation is quarantined. Here
+    // an unclosed unit-test receipt models that capability returning false;
+    // this test only verifies the native mux refuses XUDP reuse.
+    unconfirmed:=make(chan struct{})
+    wrapper:=&liB05XUDPVerifiedPipeWrapper{Reader:raw,original:raw,receipt:unconfirmed}
+    session,x:=liB05XUDPCloseTestSession(t,wrapper,writer,234)
+    began:=time.Now()
+    if err:=session.Close(false);err!=nil{t.Fatal(err)}
+    if time.Since(began)<1100*time.Millisecond {
+        t.Fatal("unconfirmed native XUDP close returned without bounded final Writer proof")
+    }
+    XUDPManager.Lock()
+    _,exists:=XUDPManager.Map[x.GlobalID]
+    XUDPManager.Unlock()
+    if exists || x.Status!=Expiring || x.Expire.After(time.Now().Add(time.Second)) {
+        t.Fatal("unconfirmed XUDP Writer was allowed into global reconnect cache")
+    }
+    t.Log("B05_XUDP_NATIVE_MUX_PENDING_FINAL_WRITER_RECEIPT_NO_RECONNECT=PASS")
 }
