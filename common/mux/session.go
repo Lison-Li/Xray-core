@@ -194,12 +194,36 @@ func (s *Session) Close(locked bool) error {
 		// unrelated/custom Reader must fail closed (interrupt + invalidate
 		// the reconnect cache), never panic or be treated as safe to resume.
 		var inputPipe *pipe.Reader
+		var confirmedReader interface{ LiB05MuxAwaitWriterReceipt(time.Duration) bool }
 		if raw, ok := s.input.(*pipe.Reader); ok {
 			inputPipe = raw
-		} else if wrapped, ok := s.input.(interface{ LiB05MuxPipeReader() *pipe.Reader }); ok {
+		} else if wrapped, ok := s.input.(interface {
+			LiB05MuxPipeReader() *pipe.Reader
+			LiB05MuxAwaitWriterReceipt(time.Duration) bool
+		}); ok {
 			inputPipe = wrapped.LiB05MuxPipeReader()
+			confirmedReader = wrapped
 		}
-		if inputPipe == nil {
+		// A real XUDP response can be delivered to the network while its
+		// fsynced final-Writer confirmation is still executing. The old
+		// Gosched+Recover leaves the WAL intent permanently unconfirmed
+		// if the worker is detached before the callback runs. Waiting for
+		// the *actual* receipt (not packet delivery, time, or a fake ACK)
+		// preserves a reconnectable XUDP only when there is no in-flight
+		// reservation. If confirmation never arrives, quarantine the ledger
+		// in the owning Reader and invalidate the global XUDP cache.
+		confirmed := inputPipe != nil
+		if confirmed {
+			inputPipe.ReturnAnError(io.EOF)
+			if confirmedReader != nil {
+				confirmed = confirmedReader.LiB05MuxAwaitWriterReceipt(1200 * time.Millisecond)
+			}
+			runtime.Gosched()
+			// Recover only after all accepted payload bytes were confirmed
+			// or the Reader has explicitly quarantined unresolved WAL.
+			inputPipe.Recover()
+		}
+		if !confirmed {
 			common.Interrupt(s.input)
 			common.Close(s.output)
 			XUDPManager.Lock()
@@ -209,12 +233,8 @@ func (s *Session) Close(locked bool) error {
 			s.XUDP.Status = Expiring
 			s.XUDP.Expire = time.Now()
 			XUDPManager.Unlock()
-			errors.LogWarning(context.Background(), "XUDP reader lacks verified original pipe: closed instead of reusing")
+			errors.LogWarning(context.Background(), "XUDP final Writer receipt absent: closed instead of reusing")
 		} else {
-			inputPipe.ReturnAnError(io.EOF)
-			runtime.Gosched()
-			// If the error set by ReturnAnError still exists, clear it.
-			inputPipe.Recover()
 			XUDPManager.Lock()
 			if s.XUDP.Status == Active {
 				s.XUDP.Expire = time.Now().Add(time.Minute)
