@@ -183,19 +183,46 @@ func (s *Session) Close(locked bool) error {
 		common.Interrupt(s.input)
 		common.Close(s.output)
 	} else {
-		// Stop existing handle(), then trigger writer.Close().
-		// Note that s.output may be dispatcher.SizeStatWriter.
-		s.input.(*pipe.Reader).ReturnAnError(io.EOF)
-		runtime.Gosched()
-		// If the error set by ReturnAnError still exists, clear it.
-		s.input.(*pipe.Reader).Recover()
-		XUDPManager.Lock()
-		if s.XUDP.Status == Active {
-			s.XUDP.Expire = time.Now().Add(time.Minute)
-			s.XUDP.Status = Expiring
-			errors.LogDebug(context.Background(), "XUDP put ", s.XUDP.GlobalID)
+		// Stop the active XUDP handle without closing the original pipe:
+		// a subsequent XUDP session with the same GlobalID may reuse it.
+		// Strict B05 metering wraps the returned XUDP session Reader to
+		// reserve fsynced bytes before the final mux/client Writer callback.
+		// Assuming s.input.(*pipe.Reader) panics on the real metered
+		// connection during teardown and leaves an unresolved WAL intent.
+		//
+		// Unwrap ONLY a Reader explicitly exposing the original pipe. An
+		// unrelated/custom Reader must fail closed (interrupt + invalidate
+		// the reconnect cache), never panic or be treated as safe to resume.
+		var inputPipe *pipe.Reader
+		if raw, ok := s.input.(*pipe.Reader); ok {
+			inputPipe = raw
+		} else if wrapped, ok := s.input.(interface{ LiB05MuxPipeReader() *pipe.Reader }); ok {
+			inputPipe = wrapped.LiB05MuxPipeReader()
 		}
-		XUDPManager.Unlock()
+		if inputPipe == nil {
+			common.Interrupt(s.input)
+			common.Close(s.output)
+			XUDPManager.Lock()
+			if XUDPManager.Map[s.XUDP.GlobalID] == s.XUDP {
+				delete(XUDPManager.Map, s.XUDP.GlobalID)
+			}
+			s.XUDP.Status = Expiring
+			s.XUDP.Expire = time.Now()
+			XUDPManager.Unlock()
+			errors.LogWarning(context.Background(), "XUDP reader lacks verified original pipe: closed instead of reusing")
+		} else {
+			inputPipe.ReturnAnError(io.EOF)
+			runtime.Gosched()
+			// If the error set by ReturnAnError still exists, clear it.
+			inputPipe.Recover()
+			XUDPManager.Lock()
+			if s.XUDP.Status == Active {
+				s.XUDP.Expire = time.Now().Add(time.Minute)
+				s.XUDP.Status = Expiring
+				errors.LogDebug(context.Background(), "XUDP put ", s.XUDP.GlobalID)
+			}
+			XUDPManager.Unlock()
+		}
 	}
 	s.parent.Remove(locked, s.ID)
 	return nil
