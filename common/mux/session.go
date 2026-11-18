@@ -267,6 +267,10 @@ type XUDP struct {
 	Status   uint64
 	Expire   time.Time
 	Mux      *Session
+	// Never derive the accounting owner from a client-supplied GlobalID.
+	// Set once by the first authenticated UDP MUX request and refuse any
+	// same-ID reconnect from a distinct credential/listener/destination.
+	liB05Owner liB05XUDPOwner
 }
 
 func (x *XUDP) Interrupt() {
