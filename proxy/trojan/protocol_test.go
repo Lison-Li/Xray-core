@@ -1,6 +1,8 @@
 package trojan_test
 
 import (
+	"errors"
+	"io"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -88,5 +90,25 @@ func TestUDPRequest(t *testing.T) {
 
 	if r := cmp.Diff(b.Bytes(), payload); r != "" {
 		t.Error("data: ", r)
+	}
+}
+
+
+type b05TrojanShortFramedSocketWriter struct{}
+
+func (b05TrojanShortFramedSocketWriter) Write(p []byte) (int,error) {
+	if len(p)==0 {return 0,nil}
+	return len(p)-1,nil // original lower Writer cannot prove full delivery
+}
+
+func TestB05TrojanNativeUDPShortFramedWriteCannotProduceAcceptedReceipt(t *testing.T) {
+	writer:=&PacketWriter{
+		Writer:b05TrojanShortFramedSocketWriter{},
+		Target:net.UDPDestination(net.LocalHostIP,35353),
+	}
+	original:=buf.FromBytes([]byte("actual-udp-bytes"))
+	err:=writer.WriteMultiBuffer(buf.MultiBuffer{original})
+	if !errors.Is(err,io.ErrShortWrite) {
+		t.Fatalf("partial real framed TLS socket Writer must fail closed, got %v",err)
 	}
 }
