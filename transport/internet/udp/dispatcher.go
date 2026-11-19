@@ -203,12 +203,14 @@ func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, cal
 				return
 			}
 		}
-		if receipt, ok := input.(interface{ LiOnWriteAccepted(int32) error }); ok {
-			if writeErr := receipt.LiOnWriteAccepted(acceptedBytes); writeErr != nil {
+		if acceptedBytes > 0 {
+			if receipt, ok := input.(interface{ LiOnWriteAccepted(int32) error }); ok {
+				if writeErr := receipt.LiOnWriteAccepted(acceptedBytes); writeErr != nil {
 				// A physically accepted socket write with no fsynced Confirm
 				// is indeterminate and must remain fail-closed.
 				errors.LogWarningInner(ctx, writeErr, "Trojan UDP socket Writer receipt not durable")
 				return
+				}
 			}
 		}
 	}
