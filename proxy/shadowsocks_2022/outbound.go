@@ -92,8 +92,13 @@ func (o *Outbound) Process(ctx context.Context, link *transport.Link, dialer int
 	}
 
 	if session.TimeoutOnlyFromContext(ctx) {
-		ctx, _ = context.WithCancel(context.Background())
-	}
+        // The prior detached context intentionally outlives the inbound
+        // timeout-only parent, but dropping cancel leaks its child registration.
+        // Tie that detached lifetime to this outbound CopyPacketConn/CopyConn.
+        detached, cancel := context.WithCancel(context.Background())
+        defer cancel()
+        ctx = detached
+    }
 
 	if network == net.Network_TCP {
 		serverConn := o.method.DialEarlyConn(connection, singbridge.ToSocksaddr(destination))
