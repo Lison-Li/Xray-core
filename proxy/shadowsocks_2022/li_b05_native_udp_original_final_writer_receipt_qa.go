@@ -36,6 +36,24 @@ type liB05SS2022NativeOriginalFinalWriter struct {
     receipt liB05SS2022FinalUDPAcceptance
 }
 
+// Upstream exposes the actual sing-shadowsocks UDP NAT -> serverPacketWriter
+// chain to sing/common/network.CalculateFrontHeadroom and
+// CalculateRearHeadroom. The real encrypted serverPacketWriter prepends up to
+// ~hundreds of bytes using Buffer.ExtendHeader; before this method the QA
+// receipt wrapper hid that capability, so CopyPacketWithPool allocated
+// start=0 and a real client response crashed at ExtendHeader(42).
+//
+// This is ONLY an allocation/headroom delegation; it never turns this
+// receipt wrapper into a replaceable writer. CopyPacket must still invoke
+// WritePacket above to fsync the authenticated WAL strictly AFTER the
+// original encrypted socket WritePacket returns successfully.
+func (c *liB05SS2022NativeOriginalFinalWriter) Upstream() any {
+    if c == nil {
+        return nil
+    }
+    return c.PacketConn
+}
+
 func (c *liB05SS2022NativeOriginalFinalWriter) WritePacket(packet *B.Buffer, addr M.Socksaddr) (err error) {
     if c == nil || c.PacketConn == nil || c.receipt == nil ||
         packet == nil || packet.Len() <= 0 || packet.Len() > math.MaxInt32 {
