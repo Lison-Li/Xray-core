@@ -20,6 +20,12 @@ import (
 
 type ResponseCallback func(ctx context.Context, packet *udp.Packet)
 
+// FinalWriterResponseCallback returns the *actual final socket Writer*
+// outcome. It is intentionally separate from the historical void callback:
+// calling LiOnWriteAccepted before this returns nil would turn an unconfirmed
+// Trojan UDP downlink reservation into fictitious revenue.
+type FinalWriterResponseCallback func(ctx context.Context, packet *udp.Packet) error
+
 type connEntry struct {
 	link   *transport.Link
 	timer  *signal.ActivityTimer
@@ -47,6 +53,7 @@ type Dispatcher struct {
 	conn       *connEntry
 	dispatcher routing.Dispatcher
 	callback   ResponseCallback
+	finalWriterCallback FinalWriterResponseCallback
 	callClose  func() error
 	closed     bool
 }
@@ -55,6 +62,18 @@ func NewDispatcher(dispatcher routing.Dispatcher, callback ResponseCallback) *Di
 	return &Dispatcher{
 		dispatcher: dispatcher,
 		callback:   callback,
+	}
+}
+
+// NewDispatcherWithFinalWriterReceipt is used only by native Trojan UDP,
+// where the response is written through a *direct* PacketWriter callback,
+// not buf.Copy. The legacy callback cannot prove post-socket acceptance.
+// The verified Writer receives its receipt after every buffer in a staged
+// ReadMultiBuffer has been handed to the real PacketWriter successfully.
+func NewDispatcherWithFinalWriterReceipt(dispatcher routing.Dispatcher, callback FinalWriterResponseCallback) *Dispatcher {
+	return &Dispatcher{
+		dispatcher:        dispatcher,
+		finalWriterCallback: callback,
 	}
 }
 
@@ -101,7 +120,7 @@ func (v *Dispatcher) getInboundRay(ctx context.Context, dest net.Destination) (*
 
 	entry.timer = signal.CancelAfterInactivity(ctx, entry.terminate, time.Minute)
 	v.conn = entry
-	go handleInput(ctx, entry, dest, v.callback, v.callClose)
+	go handleInput(ctx, entry, dest, v.callback, v.finalWriterCallback, v.callClose)
 	return entry, nil
 }
 
@@ -124,7 +143,7 @@ func (v *Dispatcher) Dispatch(ctx context.Context, destination net.Destination, 
 	}
 }
 
-func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, callback ResponseCallback, callClose func() error) {
+func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, callback ResponseCallback, finalWriterCallback FinalWriterResponseCallback, callClose func() error) {
 	defer func() {
 		conn.Close()
 		if callClose != nil {
@@ -150,14 +169,47 @@ func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, cal
 			return
 		}
 		timer.Update()
-		for _, b := range mb {
+		// The original void-callback API stays byte-for-byte unchanged for
+		// every non-Trojan UDP use. It cannot authorize B05 WAL Confirm.
+		if finalWriterCallback == nil {
+			for _, b := range mb {
+				if b.UDP != nil {
+					dest = *b.UDP
+				}
+				callback(ctx, &udp.Packet{Payload: b, Source: dest})
+			}
+			continue
+		}
+
+		// Stage size is measured BEFORE PacketWriter consumes/releases its
+		// buffers. The final callback returns only when the underlying
+		// Trojan framed TLS socket Writer returns success or failure.
+		acceptedBytes := mb.Len()
+		for i, b := range mb {
 			if b.UDP != nil {
 				dest = *b.UDP
 			}
-			callback(ctx, &udp.Packet{
-				Payload: b,
-				Source:  dest,
-			})
+			if writeErr := finalWriterCallback(ctx, &udp.Packet{Payload: b, Source: dest}); writeErr != nil {
+				// One or more datagrams may have reached the socket. Never
+				// invent an ACK or refund. The source ledger's own fail-
+				// closed handling quarantines the original reservation.
+				if receipt, ok := input.(interface{ LiOnWriteFailed(error) }); ok {
+					receipt.LiOnWriteFailed(writeErr)
+				}
+				for _, remaining := range mb[i+1:] {
+					remaining.Release()
+				}
+				errors.LogWarningInner(ctx, writeErr, "Trojan final UDP socket Writer did not accept complete batch")
+				return
+			}
+		}
+		if receipt, ok := input.(interface{ LiOnWriteAccepted(int32) error }); ok {
+			if writeErr := receipt.LiOnWriteAccepted(acceptedBytes); writeErr != nil {
+				// A physically accepted socket write with no fsynced Confirm
+				// is indeterminate and must remain fail-closed.
+				errors.LogWarningInner(ctx, writeErr, "Trojan UDP socket Writer receipt not durable")
+				return
+			}
 		}
 	}
 }
