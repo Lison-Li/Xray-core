@@ -2,6 +2,7 @@ package shadowsocks_2022
 
 import (
 	"context"
+	"io"
 
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
 	"github.com/sagernet/sing-shadowsocks/shadowaead_2022"
@@ -165,7 +166,18 @@ func (c *natPacketConn) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err erro
 	return
 }
 
+// The original encrypted UDP packet must reach the real socket in full.
+// A short underlying net.Conn.Write with nil error is NOT acceptance.
+// Retain the actual error for ambiguous WAL handling by a separately gated
+// final-Writer receipt adapter; this does not itself issue any billing ACK.
 func (c *natPacketConn) WritePacket(buffer *B.Buffer, addr M.Socksaddr) error {
-	_, err := buffer.WriteTo(c)
-	return err
+	wanted := int64(buffer.Len())
+	n, err := buffer.WriteTo(c)
+	if err != nil {
+		return err
+	}
+	if n != wanted {
+		return io.ErrShortWrite
+	}
+	return nil
 }
