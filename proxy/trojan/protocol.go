@@ -141,9 +141,16 @@ func (w *PacketWriter) writePacket(payload []byte, dest net.Destination) (int, e
 	if _, err := buffer.Write(payload); err != nil {
 		return 0, err
 	}
-	_, err := w.Write(buffer.Bytes())
+	// A short framed UDP socket write is NOT a completed packet and must
+	// never trigger a strict B05 lower-Writer acceptance receipt. Preserve
+	// the original error rather than converting partially delivered bytes
+	// into an invented successful accounting confirmation.
+	n, err := w.Write(buffer.Bytes())
 	if err != nil {
 		return 0, err
+	}
+	if n != buffer.Len() {
+		return 0, io.ErrShortWrite
 	}
 
 	return length, nil
