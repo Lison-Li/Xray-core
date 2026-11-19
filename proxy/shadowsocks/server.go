@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"context"
+	"io"
 	"time"
 	"os"
 
@@ -107,32 +108,53 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 }
 
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+	// Decrypted UDP responses reach their original encrypted client through
+	// THIS direct EncodeUDPPacket -> real stat.Connection.Write, bypassing
+	// buf.Copy. The legacy void callback cannot acknowledge a B05 downlink
+	// WAL reservation. This separate original-fork QA capability never
+	// authorizes arbitrary production/public UDP or another SS protocol.
+	writeEncryptedPacket := func(ctx context.Context, packet *udp_proto.Packet) error {
 		request := protocol.RequestHeaderFromContext(ctx)
 		payload := packet.Payload
-		if request == nil {
+		if request == nil || request.User == nil {
 			payload.Release()
-			return
+			return errors.New("SS UDP final Writer has no authenticated original user")
 		}
-
 		if payload.UDP != nil {
 			request = &protocol.RequestHeader{
-				User:    request.User,
-				Address: payload.UDP.Address,
-				Port:    payload.UDP.Port,
+				User: request.User, Address: payload.UDP.Address, Port: payload.UDP.Port,
 			}
 		}
-
 		data, err := EncodeUDPPacket(request, payload.Bytes())
 		payload.Release()
 		if err != nil {
-			errors.LogWarningInner(ctx, err, "failed to encode UDP packet")
-			return
+			errors.LogWarningInner(ctx, err, "failed to encrypt SS UDP response")
+			return err
 		}
-
-		conn.Write(data.Bytes())
-		data.Release()
-	})
+		defer data.Release()
+		n, err := conn.Write(data.Bytes())
+		if err != nil {
+			return err
+		}
+		if n != int(data.Len()) {
+			return io.ErrShortWrite
+		}
+		return nil
+	}
+	var udpServer *udp.Dispatcher
+	if os.Getenv("XRAYR_LI_B05_STRICT")=="1" &&
+		os.Getenv("XRAYR_LI_B05_NATIVE_SS_UDP_QA")=="1" &&
+		os.Getenv("XRAYR_LI_B05_NATIVE_SS_UDP_FINAL_WRITER_ACK")=="1" {
+		udpServer = udp.NewDispatcherWithFinalWriterReceipt(dispatcher, writeEncryptedPacket)
+	} else {
+		udpServer = udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+			// Without the separately audited private strict meter there is
+			// no original reservation to confirm. Preserve normal delivery.
+			if err:=writeEncryptedPacket(ctx,packet);err!=nil {
+				errors.LogWarningInner(ctx,err,"failed SS native UDP encrypted response")
+			}
+		})
+	}
 	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)
