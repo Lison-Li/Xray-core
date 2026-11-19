@@ -149,7 +149,7 @@ func (w *PacketWriter) writePacket(payload []byte, dest net.Destination) (int, e
 	if err != nil {
 		return 0, err
 	}
-	if n != buffer.Len() {
+	if n != int(buffer.Len()) {
 		return 0, io.ErrShortWrite
 	}
 
