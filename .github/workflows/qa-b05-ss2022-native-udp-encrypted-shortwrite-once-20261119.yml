@@ -1,4 +1,4 @@
-name: B05 SS2022 native UDP original post-socket callback and short-write focused regression
+name: B05 SS2022 stable authenticated user IDs concurrent revoke and original UDP post-socket callback Go race QA
 on:
   push:
     branches: [qa/b05-ss2022-native-udp-encrypted-final-writer-20261119]
@@ -45,7 +45,10 @@ jobs:
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound.go)" = dae4c4050297fe99617a8ad59ad7eb2a81e211a7
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_encrypted_socket_write_test.go)" = 64ec37a5d218a053e8a5194ba765e3192c5d8115
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/outbound.go)" = 448e9802553a0c878ec0d0b7aa2121883ed433e7
-          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = c6d2a7fe9974394722fce80b6e175378724f48e2
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = 32ec2c0994f90d1cce5605f065f900c293892c2d
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_stable_user_id_revoke_race_test.go)" = 714bf4e6d91fe62fd9da7567e5169ecdbd75c941
+          grep -Fq 'liB05AuthenticatedUserByID' proxy/shadowsocks_2022/inbound_multi.go
+          grep -Fq 'candidateIDs' proxy/shadowsocks_2022/inbound_multi.go
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa.go)" = 16b5a7429cfda9f2aa941093662a39bb03a8a795
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa_test.go)" = 9692f66421eb08dbfa9df359e8be01040c91de0d
           grep -Fq 'liB05SS2022NativeUDPWrapOriginal(ctx, link.Reader, conn)' proxy/shadowsocks_2022/inbound_multi.go
@@ -58,8 +61,16 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          timeout --signal=TERM --kill-after=10s 500s go test -p=4 -count=1 -timeout=450s -v -run '^TestB05SS2022Native(EncryptedUDPSocketWriteMustBeComplete|OriginalUDP)' ./proxy/shadowsocks_2022
-          echo QA_B05_SS2022_NATIVE_UDP_ORIGINAL_CALLBACK_AND_SOCKET_BOUNDARY_GO_TEST=PASS_UNIT_ONLY
+          timeout --signal=TERM --kill-after=10s 500s go test -p=4 -count=1 -timeout=450s -v -run '^TestB05SS2022(Native(EncryptedUDPSocketWriteMustBeComplete|OriginalUDP)|RemoveUserPreservesStableAuthenticatedID|AuthenticatedUserReadConcurrentRevokeAndReadd)' ./proxy/shadowsocks_2022
+          echo QA_B05_SS2022_NATIVE_UDP_ORIGINAL_CALLBACK_AND_STABLE_UID_GO_TEST=PASS_UNIT_ONLY
+      - name: Race-check real SS2022 authentication snapshots against delete/readd concurrent readers
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=10s 420s go test -race -p=2 -count=1 -timeout=390s -v -run '^TestB05SS2022(AuthenticatedUserReadConcurrentRevokeAndReadd|RemoveUserPreservesStableAuthenticatedID)' ./proxy/shadowsocks_2022
+          echo QA_B05_SS2022_REAL_SING_MULTISERVICE_UID_REVOKE_GO_RACE=PASS_UNIT_ONLY
       - name: Vet exact changed source package without any installed or running proxies
         shell: bash
         run: |
