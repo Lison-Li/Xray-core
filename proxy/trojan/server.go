@@ -249,7 +249,12 @@ func (s *Server) handleUDPPayload(ctx context.Context, sessionPolicy policy.Sess
 	defer cancel()
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
 	defer timer.SetTimeout(0)
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+	// The native Trojan UDP response takes the asynchronous Dispatcher
+	// callback -> framed PacketWriter -> actual TLS socket path, bypassing
+	// buf.Copy and its normal post-Writer receipt. Require the real socket
+	// Writer outcome before the Dispatcher may acknowledge any B05 WAL
+	// reservation made by the authenticated UDP response Reader.
+	udpServer := udp.NewDispatcherWithFinalWriterReceipt(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) error {
 		udpPayload := packet.Payload
 		if udpPayload.UDP == nil {
 			udpPayload.UDP = &packet.Source
@@ -258,9 +263,10 @@ func (s *Server) handleUDPPayload(ctx context.Context, sessionPolicy policy.Sess
 		if err := clientWriter.WriteMultiBuffer(buf.MultiBuffer{udpPayload}); err != nil {
 			errors.LogWarningInner(ctx, err, "failed to write response")
 			cancel()
-		} else {
-			timer.Update()
+			return err
 		}
+		timer.Update()
+		return nil
 	})
 	defer udpServer.RemoveRay()
 
