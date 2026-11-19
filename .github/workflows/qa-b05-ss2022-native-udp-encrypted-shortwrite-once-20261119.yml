@@ -44,6 +44,8 @@ jobs:
           test "$(git rev-parse HEAD:go.mod)" = d67419b6d6587ba848cb8211b8c9d3cd0a912c86
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound.go)" = dae4c4050297fe99617a8ad59ad7eb2a81e211a7
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_encrypted_socket_write_test.go)" = 64ec37a5d218a053e8a5194ba765e3192c5d8115
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/outbound.go)" = 448e9802553a0c878ec0d0b7aa2121883ed433e7
+          grep -Fq 'defer cancel()' proxy/shadowsocks_2022/outbound.go
           grep -Fq 'return io.ErrShortWrite' proxy/shadowsocks_2022/inbound.go
           grep -Fq 'TestB05SS2022NativeEncryptedUDPSocketWriteMustBeComplete' proxy/shadowsocks_2022/li_b05_native_udp_encrypted_socket_write_test.go
           echo QA_B05_SS2022_NATIVE_UDP_SOURCE_HASHES_PINNED=PASS
