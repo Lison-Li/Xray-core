@@ -272,7 +272,13 @@ func (i *MultiUserInbound) NewPacketConnection(ctx context.Context, conn N.Packe
 		Writer: link.Writer,
 		Dest:   destination,
 	}
-	return bufio.CopyPacketConn(ctx, conn, outConn)
+    // For the separately dual-opted native UDP QA only, ensure a downlink
+    // WAL receipt arrives AFTER the sing-shadowsocks encrypted server packet
+    // has traversed the original natPacketConn socket. Ordinary SS2022
+    // mode remains untouched; partial QA flags refuse forwarding.
+    originalConn, err := liB05SS2022NativeUDPWrapOriginal(ctx, link.Reader, conn)
+    if err != nil { return err }
+	return bufio.CopyPacketConn(ctx, originalConn, outConn)
 }
 
 func (i *MultiUserInbound) NewError(ctx context.Context, err error) {
