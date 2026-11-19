@@ -1,0 +1,63 @@
+name: B05 SS2022 native UDP encrypted socket short write focused source regression
+on:
+  push:
+    branches: [qa/b05-ss2022-native-udp-encrypted-final-writer-20261119]
+    paths: [.github/workflows/qa-b05-ss2022-native-udp-encrypted-shortwrite-once-20261119.yml]
+permissions: {contents: read}
+concurrency:
+  group: qa-b05-ss2022-udp-shortwrite-once-20261119
+  cancel-in-progress: false
+jobs:
+  github_hosted_source_regression_only:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/qa/b05-ss2022-native-udp-encrypted-final-writer-20261119' &&
+      github.event.head_commit.message == '[qa-b05-ss2022-encrypted-udp-shortwrite-source-once-20261119]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: amd64
+      GOMAXPROCS: '4'
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 1, persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Pin true unchanged fork module, isolated native SS2022 UDP source and regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "$(git rev-parse HEAD:go.mod)" = d67419b6d6587ba848cb8211b8c9d3cd0a912c86
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound.go)" = dae4c4050297fe99617a8ad59ad7eb2a81e211a7
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_encrypted_socket_write_test.go)" = 64ec37a5d218a053e8a5194ba765e3192c5d8115
+          grep -Fq 'return io.ErrShortWrite' proxy/shadowsocks_2022/inbound.go
+          grep -Fq 'TestB05SS2022NativeEncryptedUDPSocketWriteMustBeComplete' proxy/shadowsocks_2022/li_b05_native_udp_encrypted_socket_write_test.go
+          echo QA_B05_SS2022_NATIVE_UDP_SOURCE_HASHES_PINNED=PASS
+      - name: Compile, test actual original encrypted socket short/full/error boundary only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=10s 500s go test -p=4 -count=1 -timeout=450s -v -run '^TestB05SS2022NativeEncryptedUDPSocketWriteMustBeComplete$' ./proxy/shadowsocks_2022
+          echo QA_B05_SS2022_NATIVE_UDP_SOCKET_BOUNDARY_REAL_GO_TEST=PASS
+      - name: Vet exact changed source package without any installed or running proxies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=10s 100s go vet -p=4 ./proxy/shadowsocks_2022
+          echo QA_B05_SS2022_NATIVE_UDP_SOCKET_BOUNDARY_VET=PASS
+          echo QA_PROXY_PROGRAM_INSTALLED_OR_EXECUTED=NO
+          echo QA_GITHUB_ACTIONS_ARTIFACTS_UPLOADED=ZERO
