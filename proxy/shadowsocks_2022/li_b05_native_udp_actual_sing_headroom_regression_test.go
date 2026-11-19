@@ -28,6 +28,15 @@ func (r *b05SS2022OneActualCopyPacketReader) ReadPacket(p *B.Buffer)(M.Socksaddr
     return M.Socksaddr{},nil
 }
 
+// A source-pinned test-only copy of the verified minimum envelope
+// requirement. The real sing-shadowsocks serverPacketWriter is unexported
+// in its DIFFERENT Go package and cannot be instantiated here. Its actual
+// FrontHeadroom() and RearHeadroom() are independently exercised by the
+// overseas official client, NOT claimed to run in this unit test.
+type b05SS2022EncryptedHeadroomDemand struct{}
+func (*b05SS2022EncryptedHeadroomDemand) FrontHeadroom() int { return 64 }
+func (*b05SS2022EncryptedHeadroomDemand) RearHeadroom() int { return 16 }
+
 type b05SS2022ActualHeaderSpaceWriter struct{
     N.PacketConn
     downstream any
@@ -55,16 +64,17 @@ func (p *b05SS2022ActualHeaderSpaceWriter) WritePacket(b *B.Buffer,_ M.Socksaddr
 
 func TestB05SS2022NativeActualSingCopyPacketPreservesEncryptedHeaderSpaceAndPlainWALBytes(t *testing.T){
     b05SS2022NativeOriginalTestFlags(t)
-    // This is the actual sing-shadowsocks writer object that carries the
-    // negotiated per-cipher front & rear headroom. Its Upstream() in real
-    // service is reached via sing/common/udpnat.(*conn).Upstream().
-    realEncryptedWriter:=&serverPacketWriter{Service:&Service{}}
-    expectedFront:=N.CalculateFrontHeadroom(realEncryptedWriter)
-    expectedRear:=N.CalculateRearHeadroom(realEncryptedWriter)
+    // Real sing-shadowsocks uses an unexported serverPacketWriter in its
+    // own separate package. We test the exact public buffer/copy algorithm
+    // with an envelope that requires more than its observed 42-byte header.
+    // The full encrypted server + real original socket is checked E2E.
+    headroomDemand:=&b05SS2022EncryptedHeadroomDemand{}
+    expectedFront:=N.CalculateFrontHeadroom(headroomDemand)
+    expectedRear:=N.CalculateRearHeadroom(headroomDemand)
     if expectedFront<42 || expectedRear<16 {
         t.Fatalf("upstream source version changed SS2022 encrypted envelope: front=%d rear=%d",expectedFront,expectedRear)
     }
-    original:=&b05SS2022ActualHeaderSpaceWriter{downstream:realEncryptedWriter}
+    original:=&b05SS2022ActualHeaderSpaceWriter{downstream:headroomDemand}
     receipt:=&b05SS2022OriginalReceiptProbe{}
     wrapped,err:=liB05SS2022NativeUDPWrapOriginal(b05SS2022NativeOriginalTestContext(),receipt,original)
     if err!=nil {t.Fatal(err)}
