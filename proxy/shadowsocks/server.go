@@ -113,6 +113,16 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 // lower-socket receipt and WAL must be separately verified with real clients.
 func LiB05NativeSSUDPEncryptedSocketReceiptHookReady() bool { return true }
 
+// A synchronous successful write of the FULL original encrypted SS packet
+// is required before the Dispatcher can confirm the decrypted application
+// payload reservation. The encrypted UDP framing/salt bytes are not billed.
+func liB05SSNativeFinalEncryptedSocketWrite(writer io.Writer, encrypted []byte) error {
+	n, err := writer.Write(encrypted)
+	if err != nil {return err}
+	if n!=len(encrypted) {return io.ErrShortWrite}
+	return nil
+}
+
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	// Decrypted UDP responses reach their original encrypted client through
 	// THIS direct EncodeUDPPacket -> real stat.Connection.Write, bypassing
@@ -138,14 +148,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			return err
 		}
 		defer data.Release()
-		n, err := conn.Write(data.Bytes())
-		if err != nil {
-			return err
-		}
-		if n != int(data.Len()) {
-			return io.ErrShortWrite
-		}
-		return nil
+		return liB05SSNativeFinalEncryptedSocketWrite(conn, data.Bytes())
 	}
 	var udpServer *udp.Dispatcher
 	if os.Getenv("XRAYR_LI_B05_STRICT")=="1" &&
