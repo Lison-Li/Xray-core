@@ -107,6 +107,12 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	}
 }
 
+// LiB05NativeSSUDPEncryptedSocketReceiptHookReady is deliberately an
+// exact-source compile-time contract for XrayR-Li's separately double-opted
+// private classic SS UDP QA. This only attests callback presence; genuine
+// lower-socket receipt and WAL must be separately verified with real clients.
+func LiB05NativeSSUDPEncryptedSocketReceiptHookReady() bool { return true }
+
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	// Decrypted UDP responses reach their original encrypted client through
 	// THIS direct EncodeUDPPacket -> real stat.Connection.Write, bypassing
