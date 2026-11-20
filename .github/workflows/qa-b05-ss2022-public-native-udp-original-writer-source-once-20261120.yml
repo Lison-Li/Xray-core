@@ -1,0 +1,94 @@
+name: B05 exact public 54687 original SS2022 UDP Writer core source regression and signed go module sums, no binary
+# One-shot, no proxy install/run, no Artifacts; source pins the precise
+# original fork module commit we must integrate into XrayR (not this workflow).
+on:
+  push:
+    branches: [qa/b05-native-ss2022-public-54687-original-writer-20261120]
+    paths: [.github/workflows/qa-b05-ss2022-public-native-udp-original-writer-source-once-20261120.yml]
+permissions: {contents: read}
+concurrency:
+  group: qa-b05-core-public-ss2022-original-writer-20261120
+  cancel-in-progress: false
+jobs:
+  github_hosted_exact_original_writer_core_test_and_module_pin:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/qa/b05-native-ss2022-public-54687-original-writer-20261120' &&
+      github.event.head_commit.message == '[qa-b05-ss2022-public-native-original-writer-core-source-once-20261120]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: amd64
+      GOMAXPROCS: '4'
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 1, persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: false}
+      - name: Verify original encrypted UDP callback and new exact public admission Git blobs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "$(git rev-parse HEAD:go.mod)" = d67419b6d6587ba848cb8211b8c9d3cd0a912c86
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = 32ec2c0994f90d1cce5605f065f900c293892c2d
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa.go)" = a0efb7a935733a53c0bc6d4bb6b6282e62253539
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa_test.go)" = b24d31fbc741ca366f6fe43b3a3e141e564f4515
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_actual_sing_headroom_regression_test.go)" = f92205a4b39040860346f7061c76c3b91c16e3d7
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_udp_encrypted_socket_write_test.go)" = 64ec37a5d218a053e8a5194ba765e3192c5d8115
+          grep -Fq 'publicQA!=publicAck' proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa.go
+          grep -Fq 'Shadowsocks_0.0.0.0_54687' proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa.go
+          grep -Fq 'liB05SS2022NativeUDPWrapOriginal(ctx, link.Reader, conn)' proxy/shadowsocks_2022/inbound_multi.go
+          echo B05_SS2022_ACTUAL_LOWER_ORIGINAL_ENCRYPTED_WRITER_PUBLIC_SOURCE_PINNED=PASS
+      - name: Execute actual original PacketConn Writer positive and old/negative regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=10s 580s \
+            go test -p=3 -count=1 -timeout=550s -v \
+              -run '^TestB05SS2022(Native|RemoveUserPreservesStableAuthenticatedID|AuthenticatedUserReadConcurrentRevokeAndReadd)' \
+              ./proxy/shadowsocks_2022
+          timeout --signal=TERM --kill-after=10s 105s go vet -p=3 ./proxy/shadowsocks_2022
+          echo B05_SS2022_ORIGINAL_NATIVE_ENCRYPTED_SOCKET_54687_CORE_FAILCLOSED_TESTS_VET=PASS
+      - name: Download exact IMMUTABLE previous source commit module, show sumDB-verified Go module/SHA for XrayR pin
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "${GITHUB_REPOSITORY}" = Lison-Li/Xray-core
+          ver='v0.0.0-20261120155822-492db5d3a061'
+          timeout --signal=TERM --kill-after=10s 200s \
+            go mod download -json "github.com/Lison-Li/Xray-core@$ver" > "$RUNNER_TEMP/qa-b05-core-module.json"
+          python3 - "$RUNNER_TEMP/qa-b05-core-module.json" <<'PY'
+          import json,sys,pathlib,hashlib,zipfile
+          x=json.load(open(sys.argv[1]))
+          assert x.get("Path")=="github.com/Lison-Li/Xray-core"
+          assert x.get("Version")=="v0.0.0-20261120155822-492db5d3a061"
+          assert x.get("Sum","").startswith("h1:") and x.get("GoModSum","").startswith("h1:") and not x.get("Error")
+          root=pathlib.Path(x["Dir"])
+          expected={
+            "proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa.go":"a0efb7a935733a53c0bc6d4bb6b6282e62253539",
+            "proxy/shadowsocks_2022/li_b05_native_udp_original_final_writer_receipt_qa_test.go":"b24d31fbc741ca366f6fe43b3a3e141e564f4515",
+            "proxy/shadowsocks_2022/inbound_multi.go":"32ec2c0994f90d1cce5605f065f900c293892c2d"
+          }
+          for p,sha in expected.items():
+              blob=(root/p).read_bytes()
+              got=hashlib.sha1(b"blob "+str(len(blob)).encode()+b"\\x00"+blob).hexdigest()
+              assert got==sha,(p,got,sha)
+          print("B05_PUBLIC_SS2022_NEW_CORE_PINNED_MODULE_VERSION="+x["Version"],flush=True)
+          print("B05_PUBLIC_SS2022_NEW_CORE_MODULE_SUM="+x["Sum"],flush=True)
+          print("B05_PUBLIC_SS2022_NEW_CORE_GOMOD_SUM="+x["GoModSum"],flush=True)
+          print("B05_PUBLIC_SS2022_NEW_CORE_FETCHED_ACTUAL_IMMUTABLE_BLOBS=PASS",flush=True)
+          PY
+          rm -f "$RUNNER_TEMP/qa-b05-core-module.json"
+          echo B05_PROXY_EXECUTED_OR_INSTALLED=NO
+          echo B05_GITHUB_ARTIFACTS_UPLOADED=ZERO
