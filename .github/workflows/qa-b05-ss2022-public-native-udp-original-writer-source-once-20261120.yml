@@ -82,7 +82,7 @@ jobs:
           }
           for p,sha in expected.items():
               blob=(root/p).read_bytes()
-              got=hashlib.sha1(b"blob "+str(len(blob)).encode()+b"\\x00"+blob).hexdigest()
+              got=hashlib.sha1(b"blob "+str(len(blob)).encode()+b"\x00"+blob).hexdigest()
               assert got==sha,(p,got,sha)
           print("B05_PUBLIC_SS2022_NEW_CORE_PINNED_MODULE_VERSION="+x["Version"],flush=True)
           print("B05_PUBLIC_SS2022_NEW_CORE_MODULE_SUM="+x["Sum"],flush=True)
