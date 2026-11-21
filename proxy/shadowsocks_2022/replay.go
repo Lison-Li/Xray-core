@@ -80,6 +80,11 @@ type ServerUDPSession struct {
 	// True from authenticated-user removal onward; a cached encrypted UDP
 	// session must not keep emitting old-user responses after a revoke.
 	revoked atomic.Bool
+	// A user removal must wait for any encrypted UDP socket Write already
+	// in progress, otherwise the account can emit bytes AFTER RemoveUser
+	// returns even though the revoked bit is set. Normal sessions only
+	// take the shared lock for the duration of their actual socket write.
+	writeGate sync.RWMutex
 	SessionID  uint64
 	Window     *SlidingWindow
 	User       *protocol.MemoryUser
@@ -197,7 +202,12 @@ func (m *UDPSessionManager) RevokeUser(u *protocol.MemoryUser) int {
 		}
 		session.Unlock()
 		if matched {
-			// Retire the cache entry before interrupting any active UDP link.
+			// After the revoked bit becomes visible, serialize against the
+			// *physical socket* (not a queued dispatcher response): any Write
+			// begun before this revoke must finish before RemoveUser returns.
+			session.writeGate.Lock()
+			session.writeGate.Unlock()
+			// Retire cache identity before interrupting the old routing link.
 			m.sessions.Delete(id)
 			session.Close()
 			count++
