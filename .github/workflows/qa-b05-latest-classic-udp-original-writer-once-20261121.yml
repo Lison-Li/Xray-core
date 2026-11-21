@@ -1,0 +1,74 @@
+name: B05 newest core classic SS original encrypted native UDP receipt source-locked verification once
+on:
+  push:
+    branches: [qa/b05-modern-classic-ss-original-udp-20261121]
+    paths: [.github/workflows/qa-b05-latest-classic-udp-original-writer-once-20261121.yml]
+permissions: {contents: read}
+concurrency:
+  group: b05-classic-original-udp-one-core-validation-20261121
+  cancel-in-progress: false
+
+jobs:
+  latest_native_classic_original_udp_failclosed_go_unit_regression:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/qa/b05-modern-classic-ss-original-udp-20261121' &&
+      github.event.head_commit.message == '[qa-b05-native-classic-ss-original-udp-source-verification-once-20261121]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      GOWORK: 'off'
+      CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: amd64
+      GOMAXPROCS: '4'
+      GOMEMLIMIT: 2800MiB
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 2, persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: false}
+      - name: Exact new native-core HEAD, compiler, authentic original short-write gate and no production changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
+          test "$GITHUB_REF" = refs/heads/qa/b05-modern-classic-ss-original-udp-20261121
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = f4c8a809e8353bebde8de1582699e4a8e6079251
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
+          test "$(git rev-parse HEAD:transport/internet/udp/dispatcher.go)" = eaac2172f80e8f64e38975148158fe98814bdc38
+          test "$(git rev-parse HEAD:proxy/shadowsocks/server.go)" = 2ec7c67a293bb0fd01a2dca35a68a56e67cb0bed
+          test "$(git rev-parse HEAD:proxy/shadowsocks/li_b05_native_ss_udp_socket_receipt_test.go)" = 46cdbc49ce0d4a371c29668fa609040a05e2c739
+          test "$(git rev-parse HEAD:transport/internet/udp/dispatcher_final_writer_receipt_test.go)" = 31f85867bb5ee7d35aa03369b929ad205ed80918
+          grep -Fq 'LiB05NativeSSUDPEncryptedSocketReceiptHookReady() bool { return true }' proxy/shadowsocks/server.go
+          grep -Fq 'NewDispatcherWithFinalWriterReceipt' proxy/shadowsocks/server.go
+          grep -Fq 'LiOnWriteAccepted(acceptedBytes)' transport/internet/udp/dispatcher.go
+          grep -Fq 'no authenticated metered Reader' transport/internet/udp/dispatcher.go
+          echo B05_NEW_CORE_CLASSIC_NATIVE_ORIGINAL_SOCKET_SOURCE_CONTRACT=PASS
+          echo B05_GITHUB_HOSTED_NEVER_EXECUTES_OR_INSTALLS_PROXY=YES
+      - name: Real source package full Go 1.27.3 tests, original socket short-write and post-Writer strict receipts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          timeout --signal=TERM --kill-after=12s 180s go mod download
+          timeout --signal=TERM --kill-after=12s 150s go mod verify
+          echo B05_NEW_NATIVE_CLASSIC_CORE_GO_COMPILE_TEST_STARTED=YES
+          timeout --signal=TERM --kill-after=12s 1250s \
+            go test -p=3 -count=1 -timeout=1200s ./proxy/shadowsocks ./transport/internet/udp
+          echo B05_NEW_NATIVE_CLASSIC_ORIGINAL_ENCRYPTED_SHORT_WRITE_DENY_AND_DISPATCHER_RECEIPT_GO_TEST=PASS
+      - name: Independent real source go vet for both exact native packages
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=12s 230s go vet -p=3 ./proxy/shadowsocks ./transport/internet/udp
+          echo B05_NEW_NATIVE_CLASSIC_SS_ORIGINAL_SOCKET_AND_UDP_DISPATCHER_GO_VET=PASS
+          echo B05_NO_XRAYR_RUNTIME_NO_LIVE_NODES_NO_PRODUCTION=YES
+          echo B05_NO_BINARY_UPLOAD_NO_ARTIFACT=YES
