@@ -1,5 +1,7 @@
 name: B05 modern native SS2022 pinned candidate manual RED GREEN UDP revoke/PSK, no binary
 on:
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       purpose:
@@ -16,9 +18,16 @@ jobs:
   manual_exact_modern_core_original_socket_shortwrite_and_user_revoke_red_green:
     if: >-
       github.repository == 'Lison-Li/Xray-core' &&
-      github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      inputs.purpose == 'verify-locked-source'
+      (
+        (github.event_name == 'workflow_dispatch' &&
+         inputs.purpose == 'verify-locked-source') ||
+        (github.event_name == 'issue_comment' &&
+         github.event.action == 'created' &&
+         github.event.issue.number == 2 &&
+         github.event.issue.pull_request != null &&
+         github.event.comment.body == '/qa-b05-native-core-c249df44-run-once')
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -46,8 +55,18 @@ jobs:
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
           test "$(git rev-parse HEAD)" = c249df44131f66bd2b6f401ea2723849d3ad133d
-          test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REF" = 'refs/heads/main'
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            :
+          elif [[ "$GITHUB_EVENT_NAME" == issue_comment ]]; then
+            test "$(jq -r '.action' "$GITHUB_EVENT_PATH")" = created
+            test "$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")" = 2
+            test "$(jq -r '.comment.body' "$GITHUB_EVENT_PATH")" = '/qa-b05-native-core-c249df44-run-once'
+            test "$(jq -r '.issue.pull_request.url // empty' "$GITHUB_EVENT_PATH")" != ''
+          else
+            echo B05_UNAUTHORIZED_QA_TRIGGER_REJECTED
+            exit 1
+          fi
           test "$(go version)" = 'go version go1.27.3 linux/amd64'
           test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 44f18b171930e26db437fb14fe19928713a08ca0
