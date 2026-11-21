@@ -77,6 +77,9 @@ func (f *SlidingWindow) CheckAndAdd(counter uint64) bool {
 
 type ServerUDPSession struct {
 	sync.Mutex
+	// True from authenticated-user removal onward; a cached encrypted UDP
+	// session must not keep emitting old-user responses after a revoke.
+	revoked atomic.Bool
 	SessionID  uint64
 	Window     *SlidingWindow
 	User       *protocol.MemoryUser
@@ -172,6 +175,36 @@ func (m *UDPSessionManager) cleanup(now int64) {
 
 func (m *UDPSessionManager) Delete(sessionID uint64) {
 	m.sessions.Delete(sessionID)
+}
+
+// RevokeUser invalidates every session cached with this EXACT authenticated
+// user pointer. A same-email/new-PSK readd must never inherit the old link,
+// nonce state, or remote reply socket. It is intentionally safe for nil
+// managers and does not erase sessions of another legitimate user.
+//
+// Callers must fence new authentication first (MultiUserInbound.Lock); inbound
+// processes take RLock while resolving and pinning a session's live user.
+func (m *UDPSessionManager) RevokeUser(u *protocol.MemoryUser) int {
+	if m == nil || u == nil {
+		return 0
+	}
+	count := 0
+	m.sessions.Range(func(id uint64, session *ServerUDPSession) bool {
+		session.Lock()
+		matched := session.User == u
+		if matched {
+			session.revoked.Store(true)
+		}
+		session.Unlock()
+		if matched {
+			// Retire the cache entry before interrupting any active UDP link.
+			m.sessions.Delete(id)
+			session.Close()
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 func (m *UDPSessionManager) EncodeServerPacket(method *CipherMethod, psk []byte, clientSessionID uint64, dest net.Destination, payload []byte) ([]byte, error) {
