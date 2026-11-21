@@ -24,6 +24,11 @@ func (s *ServerUDPSession) UpdateConn(conn stat.Connection) {
 }
 
 func (s *ServerUDPSession) WriteToClient(b []byte) error {
+	// A completed RemoveUser must imply no old account datagram is still
+	// inside the physical encrypted socket Write. The exclusive revoke lock
+	// waits for this shared lock, then future calls observe revoked=true.
+	s.writeGate.RLock()
+	defer s.writeGate.RUnlock()
 	// The caller may still be in the response goroutine after the account was
 	// removed. A closed/invalidated session must not emit any encrypted reply.
 	if s.revoked.Load() {
