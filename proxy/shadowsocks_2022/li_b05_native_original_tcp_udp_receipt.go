@@ -165,3 +165,15 @@ func liB05WriteNativeUDPBatchWithReceipt(
     }
     return nil
 }
+
+// LiB05NativeSS2022TCPOriginalSocketReceiptHookReady reports the presence
+// of native TransportTCP's strict-reader branch that acknowledges only after
+// ServerStreamWriter writes the complete encrypted original client frame.
+// This is compile-time capability ONLY, not a claim of a linked XrayR WAL.
+func LiB05NativeSS2022TCPOriginalSocketReceiptHookReady() bool { return true }
+
+// LiB05SS2022NativeUDPOriginalSocketReceiptHookReady reports that the
+// authenticated native UDP response aggregates its original encrypted
+// socket writes before the strict reader's one durable WAL callback.
+// A legacy singbridge UDP packet writer is NOT part of this modern core.
+func LiB05SS2022NativeUDPOriginalSocketReceiptHookReady() bool { return true }
