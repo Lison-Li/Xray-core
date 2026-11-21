@@ -77,6 +77,14 @@ jobs:
           timeout --signal=TERM --kill-after=12s 570s go test -p=2 -count=1 -timeout=540s -run '^TestB05ModernSS2022ActualOriginalUDPSocketWriteMustRejectShortWrite$' ./proxy/shadowsocks_2022 > "$RUNNER_TEMP/b05-modern/red.log" 2>&1
           rc=$?
           set -e
+          # The previous manual Action #44873882061 failed here, before
+          # publishing its redirected RED test log. Print bounded original
+          # Go failure diagnostics even if an assertion below fails; never
+          # accept a compiler/dependency error as expected RED.
+          echo "B05_RED_ORIGINAL_GO_TEST_EXIT=$rc"
+          echo B05_RED_ORIGINAL_GO_TEST_LOG_BEGIN
+          tail -n 120 "$RUNNER_TEMP/b05-modern/red.log" || true
+          echo B05_RED_ORIGINAL_GO_TEST_LOG_END
           test "$rc" -ne 0 && test "$rc" -ne 124 && test "$rc" -ne 137
           grep -Fq 'TestB05ModernSS2022ActualOriginalUDPSocketWriteMustRejectShortWrite/short-original-datagram-no-OS-error' "$RUNNER_TEMP/b05-modern/red.log"
           grep -Fq 'original UDP socket write acceptance=<nil>, expected=short write' "$RUNNER_TEMP/b05-modern/red.log"
