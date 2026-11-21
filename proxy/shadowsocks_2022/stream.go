@@ -96,8 +96,17 @@ func (w *StreamWriter) WriteChunk(payload []byte) error {
 	w.buf = w.cipher.Seal(w.buf, w.nonce[:], payload, nil)
 	IncreaseNonce(w.nonce[:])
 
-	_, err := w.writer.Write(w.buf)
-	return err
+	// The ciphertext is one framed AEAD chunk. A short physical socket
+	// write, even with nil error, does not commit the whole plaintext chunk.
+	// Never allow a strict final Writer to count it as accepted.
+	n, err := w.writer.Write(w.buf)
+	if err != nil {
+		return err
+	}
+	if n != len(w.buf) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (w *StreamWriter) Write(p []byte) (int, error) {
@@ -388,8 +397,15 @@ func WriteTCPRequest(w io.Writer, method *CipherMethod, pskList [][]byte, dest n
 	IncreaseNonce(writer.nonce[:])
 	handshakeBuf.Write(varChunk)
 
-	if _, err := w.Write(handshakeBuf.Bytes()); err != nil {
+	// Request salt/EIH/header/early data are a single encrypted wire frame.
+	// A partial low-level Write is a failed handshake, never a success.
+	encodedRequest := handshakeBuf.Bytes()
+	n, err := w.Write(encodedRequest)
+	if err != nil {
 		return nil, err
+	}
+	if n != len(encodedRequest) {
+		return nil, io.ErrShortWrite
 	}
 
 	return writer, nil
@@ -517,8 +533,15 @@ func (s *ServerStreamWriter) sendHeaderWithFirstPayload(payload []byte) (*Stream
 		outBuf.Write(payloadChunk)
 	}
 
-	if _, err := s.w.Write(outBuf.Bytes()); err != nil {
+	// The response header includes the first plaintext payload when
+	// present. A short original socket Write must not acknowledge either.
+	encodedResponse := outBuf.Bytes()
+	n, err := s.w.Write(encodedResponse)
+	if err != nil {
 		return nil, err
+	}
+	if n != len(encodedResponse) {
+		return nil, io.ErrShortWrite
 	}
 	return sw, nil
 }
