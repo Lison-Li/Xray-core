@@ -1,0 +1,64 @@
+name: QA B05 Modern Native SS2022 TCP Revoke Pinned Once
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  modern_native_tcp_revocation_source_pinned_race:
+    if: ${{ github.event.issue.pull_request && github.event.issue.number == 2 && github.event.comment.body == '/qa-b05-native-core-98fd1cae-tcp-once' && github.event.comment.user.login == 'Lison-Li' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: "off"
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: "1"
+      GOOS: linux
+      GOARCH: amd64
+      GOMAXPROCS: "4"
+    steps:
+      - name: Exact candidate checkout, no proxy runtime
+        uses: actions/checkout@v4
+        with:
+          ref: 98fd1caed03453938e4d9848dea3b4170bf410a1
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Exact Go 1.27.3
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.27.3
+          cache: false
+
+      - name: Independently validate source, event, and Go module lineage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "${GITHUB_REPOSITORY}" = "Lison-Li/Xray-core"
+          test "${RUNNER_ENVIRONMENT}" = github-hosted
+          test "${GITHUB_EVENT_NAME}" = issue_comment
+          test "$(jq -r .issue.number "${GITHUB_EVENT_PATH}")" = "2"
+          test "$(jq -r .comment.body "${GITHUB_EVENT_PATH}")" = '/qa-b05-native-core-98fd1cae-tcp-once'
+          test "$(git rev-parse HEAD)" = 98fd1caed03453938e4d9848dea3b4170bf410a1
+          test "$(git rev-parse HEAD^)" = c249df44131f66bd2b6f401ea2723849d3ad133d
+          test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = ccf9890a4230345054e23e1de985b2cd8ec865f3
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_modern_native_tcp_revocation_test.go)" = 17ca18d502a7ccc2b96b6e24ff7ccdc8ec6d6e54
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "${CGO_ENABLED}" = 1
+          echo B05_NATIVE_MODERN_TCP_DELETE_SOURCE_PINNED=PASS
+
+      - name: Actual full-package 2x Go race test includes new original TCP remove/user-isolation and old UDP regressions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=15s 840s \
+            go test -race -p=2 -count=2 -timeout=800s ./proxy/shadowsocks_2022
+          echo B05_NATIVE_MODERN_TCP_REMOVE_B_SURVIVOR_ROTATION_CONCURRENT_RACE_FULL_PACKAGE=PASS
+          go vet -p=2 ./proxy/shadowsocks_2022
+          echo B05_NATIVE_MODERN_TCP_DELETE_GO_VET=PASS
+          echo B05_SOURCE_UNIT_ONLY_NO_PUBLIC_CLIENT_WORKER_WAL_OR_ELF=YES
+          echo B05_NO_ARTIFACT_OR_PRODUCTION_OPERATION=YES
