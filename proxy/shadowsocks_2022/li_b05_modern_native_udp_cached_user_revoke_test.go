@@ -12,7 +12,21 @@ import (
     "time"
 
     "github.com/xtls/xray-core/common/protocol"
+    "github.com/xtls/xray-core/common/session"
+    "github.com/xtls/xray-core/core"
 )
+
+// The upstream newTestContext helper lives in the external
+// shadowsocks_2022_test package, so it cannot be referenced from this
+// internal-package test. Reproduce its real core instance/inbound context
+// exactly, with a distinct name, instead of silently mocking policy.
+func b05ModernCoreContext(t *testing.T) context.Context {
+    t.Helper()
+    instance,err:=core.New(&core.Config{})
+    if err!=nil { t.Fatalf("real Xray core context: %v",err) }
+    ctx:=context.WithValue(context.Background(),core.XrayKey(1),instance)
+    return session.ContextWithInbound(ctx,&session.Inbound{})
+}
 
 // The real modern MultiUserInbound AddUser/RemoveUser and native
 // UDPSessionManager caches are exercised directly. The socket's Write return
@@ -25,7 +39,7 @@ func TestB05ModernSS2022ActualCachedNativeUDPRevocationAndReadd(t *testing.T) {
     } {
         t.Run(tc.name,func(t *testing.T){
             master:=bytes.Repeat([]byte{0x15},tc.keySize)
-            inbound,err:=NewMultiServer(newTestContext(),&MultiUserServerConfig{
+            inbound,err:=NewMultiServer(b05ModernCoreContext(t),&MultiUserServerConfig{
                 Method:tc.method,
                 Key:base64.StdEncoding.EncodeToString(master),
             })
@@ -125,7 +139,7 @@ func (p *b05PendingOriginalSocket) Write(data []byte) (int,error) {
 }
 
 func TestB05ModernSS2022RevokeWaitsForActualOriginalUDPSocketWrite(t *testing.T) {
-    inbound,err:=NewMultiServer(newTestContext(),&MultiUserServerConfig{
+    inbound,err:=NewMultiServer(b05ModernCoreContext(t),&MultiUserServerConfig{
         Method:MethodAES128GCM,
         Key:base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x30},16)),
     })
