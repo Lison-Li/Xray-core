@@ -1,12 +1,12 @@
-name: QA B05 modern native original encrypted TCP shortwrite pinned once
+name: QA B05 modern native original TCP UDP WAL receipt pinned once
 on:
   issue_comment:
     types: [created]
 permissions:
   contents: read
 jobs:
-  modern_native_ss2022_original_tcp_write_gate:
-    if: ${{ github.event.issue.pull_request && github.event.issue.number == 2 && github.event.comment.body == '/qa-b05-modern-2b11754a-tcp-shortwrite-once' && github.event.comment.user.login == 'Lison-Li' }}
+  modern_ss2022_original_tcp_udp_physical_receipt:
+    if: ${{ github.event.issue.pull_request && github.event.issue.number == 2 && github.event.comment.body == '/qa-b05-modern-6ee10e63-receipt-once' && github.event.comment.user.login == 'Lison-Li' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -18,10 +18,10 @@ jobs:
       GOARCH: amd64
       GOMAXPROCS: "4"
     steps:
-      - name: Exact native candidate checkout
+      - name: Exact native candidate checkout, no XrayR or proxy install
         uses: actions/checkout@v4
         with:
-          ref: 2b11754ae0c94e51a5c36746756572347a98d650
+          ref: 6ee10e63383eb404973886277118c5006fbecb28
           fetch-depth: 0
           persist-credentials: false
       - name: Go 1.27.3
@@ -29,7 +29,7 @@ jobs:
         with:
           go-version: 1.27.3
           cache: false
-      - name: Verify immutable Go source and issue comment origin
+      - name: Verify immutable native source, new receipt tests and issue comment origin
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -37,21 +37,24 @@ jobs:
           test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
           test "$GITHUB_EVENT_NAME" = issue_comment
           test "$(jq -r .issue.number "$GITHUB_EVENT_PATH")" = 2
-          test "$(jq -r .comment.body "$GITHUB_EVENT_PATH")" = '/qa-b05-modern-2b11754a-tcp-shortwrite-once'
-          test "$(git rev-parse HEAD)" = 2b11754ae0c94e51a5c36746756572347a98d650
-          test "$(git rev-parse HEAD^)" = 98fd1caed03453938e4d9848dea3b4170bf410a1
+          test "$(jq -r .comment.body "$GITHUB_EVENT_PATH")" = '/qa-b05-modern-6ee10e63-receipt-once'
+          test "$(git rev-parse HEAD)" = 6ee10e63383eb404973886277118c5006fbecb28
+          test "$(git rev-parse HEAD^)" = 0c135f204c894cd1c2fe22a6a32400482b874e18
           test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
-          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/stream.go)" = ddb5c18b2d73b5bbca97259a3185993973f88572
-          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_modern_native_tcp_shortwrite_test.go)" = fda9c1c3653bc534efa3c3d72798622c017a4b62
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/stream.go)" = 31775571b68e1f489ece93c6e64ee58c6ab08d71
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 415e48446c6c351be4537cf62566c985921a548f
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_tcp_udp_receipt.go)" = 7750fb5f83c7b8a07db452ff7727054f1f4d6040
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_tcp_udp_receipt_test.go)" = e3b75a08de31b3d42e4a2f65ecef9e3307506af5
           test "$(go version)" = 'go version go1.27.3 linux/amd64'
-          echo B05_NEW_CORE_PHYSICAL_TCP_WRITE_SOURCE_PROVENANCE=PASS
-      - name: Actual 2x full native SS2022 package race and Go vet
+          echo B05_MODERN_NATIVE_SOURCE_LOCKED_TCP_UDP_PHYSICAL_RECEIPT=PASS
+      - name: Actual two complete full native SS2022 package race tests and vet
         shell: bash
         run: |
           set -Eeuo pipefail
           timeout --signal=TERM --kill-after=15s 840s \
             go test -race -p=2 -count=2 -timeout=800s ./proxy/shadowsocks_2022
-          echo B05_NEW_CORE_ORIGINAL_ENCRYPTED_TCP_CHUNK_CLIENT_SERVER_HEADER_SHORTWRITE_AND_UDP_RACE=PASS
+          echo B05_MODERN_NATIVE_ORIGINAL_TCP_UDP_RECEIPT_RACE_FULL_PACKAGE=PASS
           go vet -p=2 ./proxy/shadowsocks_2022
-          echo B05_NEW_CORE_TCP_SHORTWRITE_GO_VET=PASS
-          echo B05_NO_PROXY_EXECUTION_NO_ARTIFACT_NO_PRODUCTION=YES
+          echo B05_MODERN_NATIVE_ORIGINAL_TCP_UDP_RECEIPT_GO_VET=PASS
+          echo B05_SOURCE_UNIT_ONLY_NOT_EXTERNAL_CLIENT_OR_WAL_D1=YES
+          echo B05_NO_ELF_ARTIFACT_PRODUCTION_OR_PROXY_RUNTIME=YES
