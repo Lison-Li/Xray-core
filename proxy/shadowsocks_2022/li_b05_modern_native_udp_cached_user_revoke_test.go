@@ -34,6 +34,15 @@ func TestB05ModernSS2022ActualCachedNativeUDPRevocationAndReadd(t *testing.T) {
             for _,u:=range []*protocol.MemoryUser{old,survivor}{
                 if err:=inbound.AddUser(context.Background(),u);err!=nil{t.Fatal(err)}
             }
+            // Different billable UIDs must not share an EIH/PSK hash.
+            alias:=&protocol.MemoryUser{Email:"alias-duplicate@qa.invalid",
+                Account:&MemoryAccount{Key:append([]byte(nil),oldKey...)}}
+            if err:=inbound.AddUser(context.Background(),alias);err==nil {
+                t.Fatal("different user using exact duplicate SS2022 EIH key was admitted")
+            }
+            if inbound.GetUsersCount(context.Background())!=2 {
+                t.Fatal("rejected PSK identity modified user count")
+            }
             oldHash:=DeriveUserPSKHash(oldKey)
             bHash:=DeriveUserPSKHash(bKey)
             inbound.RLock()
