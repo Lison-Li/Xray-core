@@ -24,6 +24,11 @@ func (s *ServerUDPSession) UpdateConn(conn stat.Connection) {
 }
 
 func (s *ServerUDPSession) WriteToClient(b []byte) error {
+	// The caller may still be in the response goroutine after the account was
+	// removed. A closed/invalidated session must not emit any encrypted reply.
+	if s.revoked.Load() {
+		return ErrInvalidRequest
+	}
 	connVal := s.currentConn.Load()
 	if connVal == nil {
 		return errors.New("client connection closed")
@@ -67,6 +72,11 @@ func (s *ServerUDPSession) EnsureLink(
 	s.Lock()
 	defer s.Unlock()
 
+	// Removal may have invalidated this session between authenticated UDP
+	// packet decoding and new link creation. Never dispatch a revoked user.
+	if s.revoked.Load() {
+		return nil, ErrInvalidRequest
+	}
 	if link := s.link.Load(); link != nil {
 		s.UpdateConn(conn)
 		return link, nil
