@@ -2,6 +2,7 @@ package shadowsocks_2022
 
 import (
 	"context"
+	"io"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -31,8 +32,18 @@ func (s *ServerUDPSession) WriteToClient(b []byte) error {
 	if !ok || conn == nil {
 		return errors.New("client connection closed")
 	}
-	_, err := conn.Write(b)
-	return err
+	// This is the ORIGINAL encrypted UDP socket, not a dispatcher pipe.
+	// net.Conn.Write may legally report n < len(b) with err == nil.
+	// Treat that as a failed datagram, never a successful final Writer
+	// acknowledgment or an opportunity to charge the full payload.
+	n, err := conn.Write(b)
+	if err != nil {
+		return err
+	}
+	if n != len(b) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (s *ServerUDPSession) Close() {
