@@ -6,7 +6,10 @@ import (
     "encoding/base64"
     "errors"
     stdnet "net"
+    "sync"
+    "sync/atomic"
     "testing"
+    "time"
 
     "github.com/xtls/xray-core/common/protocol"
 )
@@ -105,5 +108,74 @@ func TestB05ModernSS2022ActualCachedNativeUDPRevocationAndReadd(t *testing.T) {
             }
             t.Log("B05_MODERN_ORIGINAL_SS2022_NATIVE_UDP_LIVE_EIH_REMOVE_READD_AND_SURVIVOR=PASS_UNIT")
         })
+    }
+}
+
+type b05PendingOriginalSocket struct {
+    stdnet.Conn
+    entered chan struct{}
+    release chan struct{}
+    calls atomic.Int32
+}
+func (p *b05PendingOriginalSocket) Write(data []byte) (int,error) {
+    p.calls.Add(1)
+    close(p.entered)
+    <-p.release
+    return len(data),nil
+}
+
+func TestB05ModernSS2022RevokeWaitsForActualOriginalUDPSocketWrite(t *testing.T) {
+    inbound,err:=NewMultiServer(newTestContext(),&MultiUserServerConfig{
+        Method:MethodAES128GCM,
+        Key:base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x30},16)),
+    })
+    if err!=nil{t.Fatal(err)}
+    u:=&protocol.MemoryUser{Email:"in-flight@qa.invalid",
+        Account:&MemoryAccount{Key:bytes.Repeat([]byte{0x47},16)}}
+    if err:=inbound.AddUser(context.Background(),u);err!=nil{t.Fatal(err)}
+    session:=inbound.udpSessions.GetOrCreate(2012)
+    session.Lock();session.User=u;session.UserPSK=u.Account.(*MemoryAccount).Key;session.Unlock()
+    a,b:=stdnet.Pipe();defer a.Close();defer b.Close()
+    wire:=&b05PendingOriginalSocket{Conn:a,entered:make(chan struct{}),release:make(chan struct{})}
+    session.currentConn.Store(wire)
+    sent:=make(chan error,1)
+    go func(){sent<-session.WriteToClient([]byte("true-encrypted-udp-socket"))}()
+    select {
+    case <-wire.entered:
+    case <-time.After(4*time.Second):t.Fatal("original encrypted socket was never called")
+    }
+    var once sync.Once
+    unblock:=func(){once.Do(func(){close(wire.release)})}
+    defer unblock()
+    revoked:=make(chan error,1)
+    started:=make(chan struct{})
+    go func(){close(started);revoked<-inbound.RemoveUser(context.Background(),u.Email)}()
+    <-started
+    select {
+    case err:=<-revoked:
+        t.Fatalf("RemoveUser returned while original encrypted socket Write still pending: %v",err)
+    case <-time.After(60*time.Millisecond):
+        // Expected: real OS Write acceptance must have a happens-before
+        // relationship with the successful completion of account revocation.
+    }
+    unblock()
+    select {
+    case err:=<-sent:
+        if err!=nil{t.Fatalf("original pre-revoke datagram unexpectedly failed: %v",err)}
+    case <-time.After(4*time.Second):
+        t.Fatal("in-flight original UDP socket never completed")
+    }
+    select {
+    case err:=<-revoked:
+        if err!=nil{t.Fatalf("real cached account removal failed: %v",err)}
+    case <-time.After(4*time.Second):
+        t.Fatal("revocation failed to finish after physical socket returned")
+    }
+    if !session.revoked.Load(){t.Fatal("removed original UDP session not marked revoked")}
+    if err:=session.WriteToClient([]byte("after-revoke"));!errors.Is(err,ErrInvalidRequest){
+        t.Fatalf("revoked original encrypted UDP socket incorrectly admitted post-remove packet: %v",err)
+    }
+    if wire.calls.Load()!=1{
+        t.Fatalf("revoked original encrypted socket sent extra datagrams: %d",wire.calls.Load())
     }
 }
