@@ -85,6 +85,9 @@ type ServerUDPSession struct {
 	// returns even though the revoked bit is set. Normal sessions only
 	// take the shared lock for the duration of their actual socket write.
 	writeGate sync.RWMutex
+	// Independent of per-datagram writeGate: protects the WAL receipt for
+	// an entire multi-datagram plaintext reservation until Confirm completes.
+	liB05ReceiptGate sync.RWMutex
 	SessionID  uint64
 	Window     *SlidingWindow
 	User       *protocol.MemoryUser
@@ -207,6 +210,10 @@ func (m *UDPSessionManager) RevokeUser(u *protocol.MemoryUser) int {
 			// begun before this revoke must finish before RemoveUser returns.
 			session.writeGate.Lock()
 			session.writeGate.Unlock()
+			// A final original socket datagram may already have written while
+			// the all-datagram WAL Confirm has not yet returned.
+			session.liB05ReceiptGate.Lock()
+			session.liB05ReceiptGate.Unlock()
 			// Retire cache identity before interrupting the old routing link.
 			m.sessions.Delete(id)
 			session.Close()

@@ -485,6 +485,9 @@ type ServerStreamWriter struct {
 	psk          []byte
 	clientSalt   []byte
 	streamWriter *StreamWriter
+	// This original authenticated socket binding is assigned exclusively by
+	// MultiUserInbound before dispatch, never by an untrusted client.
+	liB05NativeTCPBinding *liB05TCPBinding
 }
 
 func NewServerStreamWriter(w io.Writer, method *CipherMethod, psk []byte, clientSalt []byte) *ServerStreamWriter {

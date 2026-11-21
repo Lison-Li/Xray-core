@@ -43,19 +43,37 @@ func liB05CopyNativeTCPOriginalWithReceipt(r liB05NativeClientReceiptReader, ori
                 r.LiOnWriteFailed(readErr)
                 return readErr
             }
+            // Hold the authenticated socket's deletion fence from BEFORE
+            // the final physical Write through the final durable receipt.
+            // The WAL reader has already reserved this plaintext chunk.
+            // If an account was removed during Read, fail the outstanding
+            // reservation instead of writing a post-revoke packet.
+            binding := original.liB05NativeTCPBinding
+            if binding != nil {
+                binding.liB05ReceiptGate.RLock()
+                if binding.liB05Revoked.Load() {
+                    binding.liB05ReceiptGate.RUnlock()
+                    r.LiOnWriteFailed(ErrInvalidRequest)
+                    return ErrInvalidRequest
+                }
+            }
             wrote, writeErr := original.Write(plain[:n])
             if writeErr != nil {
                 r.LiOnWriteFailed(writeErr)
+                if binding != nil { binding.liB05ReceiptGate.RUnlock() }
                 return writeErr
             }
             if wrote != n {
                 r.LiOnWriteFailed(io.ErrShortWrite)
+                if binding != nil { binding.liB05ReceiptGate.RUnlock() }
                 return io.ErrShortWrite
             }
             if err := r.LiOnWriteAccepted(int32(n)); err != nil {
                 r.LiOnWriteFailed(err)
+                if binding != nil { binding.liB05ReceiptGate.RUnlock() }
                 return err
             }
+            if binding != nil { binding.liB05ReceiptGate.RUnlock() }
             if onActivity != nil { onActivity() }
             empty = 0
             continue
@@ -95,6 +113,19 @@ func liB05WriteNativeUDPBatchWithReceipt(
         receipt.LiOnWriteFailed(bad)
         buf.ReleaseMulti(mb)
         return bad
+    }
+    if metered {
+        // Keep all datagrams from the same durable reservation and their
+        // ONE final WAL callback in a single revoke-aware critical section.
+        // Do NOT reuse writeGate: WriteToClient also takes its RLock, and
+        // a pending exclusive RemoveUser could deadlock a recursive RLock.
+        s.liB05ReceiptGate.RLock()
+        defer s.liB05ReceiptGate.RUnlock()
+        if s.revoked.Load() {
+            receipt.LiOnWriteFailed(ErrInvalidRequest)
+            buf.ReleaseMulti(mb)
+            return ErrInvalidRequest
+        }
     }
     for idx, b := range mb {
         payload := b.Bytes()

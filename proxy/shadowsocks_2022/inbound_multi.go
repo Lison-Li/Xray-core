@@ -168,7 +168,17 @@ func (i *MultiUserInbound) RemoveUser(ctx context.Context, email string) error {
 	// accepted original sockets while still holding this fence. This also
 	// interrupts a handshake authenticated immediately before deletion.
 	for binding := range i.tcpConnections[u] {
+		// Set the fence before closing sockets: no later strict original
+		// downlink can acquire a fresh Writer receipt after this point.
+		binding.liB05Revoked.Store(true)
 		_ = binding.conn.Close()
+	}
+	for binding := range i.tcpConnections[u] {
+		// A full socket.Write may have returned while its durable Confirm
+		// is still blocked. Do not report deletion complete until the
+		// physical-write-to-WAL-confirm critical section is drained.
+		binding.liB05ReceiptGate.Lock()
+		binding.liB05ReceiptGate.Unlock()
 	}
 	delete(i.tcpConnections, u)
 	// Invalidate sessions that previously resolved this exact account. Merely
@@ -226,6 +236,10 @@ func (i *MultiUserInbound) Process(ctx context.Context, network net.Network, con
 type liB05TCPBinding struct {
 	user *protocol.MemoryUser
 	conn net.Conn
+	// When a strict native downlink is being transmitted, this gate holds
+	// through the fsynced WAL Confirm/Quarantine, not just socket.Write.
+	liB05ReceiptGate sync.RWMutex
+	liB05Revoked atomic.Bool
 }
 
 // liB05BindTCPUser atomically checks live EIH identity and registers the
@@ -319,6 +333,7 @@ func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispat
 	dest := reqHeader.Destination
 
 	writer := NewServerStreamWriter(conn, i.method, userPSK, saltSlice)
+	writer.liB05NativeTCPBinding = binding
 
 	// Dispatch Connection to Xray routing with matched User
 	inbound := session.InboundFromContext(ctx)
