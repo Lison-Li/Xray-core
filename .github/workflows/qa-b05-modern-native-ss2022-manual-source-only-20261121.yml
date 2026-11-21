@@ -123,3 +123,67 @@ jobs:
           echo B05_NO_PROXY_INSTALL_OR_RUN=YES
           echo B05_NO_PRODUCTION_OR_LIVE_NODE_MODIFICATION=YES
           echo B05_NO_BINARY_OR_ARTIFACT=YES
+
+  native_ss2022_fenced_revocation_full_package_go_race:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.event_name == 'issue_comment' &&
+      github.ref == 'refs/heads/main' &&
+      github.event.action == 'created' &&
+      github.event.issue.number == 2 &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/qa-b05-native-core-c249df44-race-once'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions: {contents: read}
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: '1'
+      GOOS: linux
+      GOARCH: amd64
+      GOMAXPROCS: '4'
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 'c249df44131f66bd2b6f401ea2723849d3ad133d'
+          fetch-depth: 16
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: false}
+      - name: Exact fixed latest-core source lineage and all native packet/revoke test provenance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_EVENT_NAME" = issue_comment
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(jq -r .issue.number "$GITHUB_EVENT_PATH")" = 2
+          test "$(jq -r .comment.body "$GITHUB_EVENT_PATH")" = '/qa-b05-native-core-c249df44-race-once'
+          test "$(git rev-parse HEAD)" = c249df44131f66bd2b6f401ea2723849d3ad133d
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 44f18b171930e26db437fb14fe19928713a08ca0
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = bcf9fdcce3b6fc402d12ab686164264d12bf711b
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/replay.go)" = 8d6c527d6ca0edeb1c965e39a62ab7e1833139a8
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_modern_native_udp_cached_user_revoke_test.go)" = d94785963c4178ba5e2c30bad222a5a02ad443d7
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_udp_socket_shortwrite_test.go)" = fc367e30aec418d4766bca7de9c238fc020704ab
+          git cat-file -e 'a4a3dff5b20c2faae567b742c172c7b95e75c083^{commit}'
+          test "$(git rev-list --count a4a3dff5b20c2faae567b742c172c7b95e75c083..HEAD)" = 14
+          test "$CGO_ENABLED" = 1
+          echo B05_NATIVE_MODERN_CORE_RACE_ORIGIN_AND_REAL_SOURCE_SHA=PASS
+      - name: Full modern original shadowsocks 2022 native package Go race tests, no XrayR binaries or runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          timeout --signal=TERM --kill-after=15s 840s \
+            go test -race -p=2 -count=2 -timeout=800s ./proxy/shadowsocks_2022
+          echo B05_NATIVE_MODERN_CORE_FULL_SS2022_PACKAGE_2X_GO_RACE=PASS
+          echo B05_NO_PROXY_INSTALL_OR_EXECUTE=YES
+          echo B05_NO_RELEASE_ELF_OR_ARTIFACT=YES
+          echo B05_NO_PRODUCTION_CHANGES=YES
