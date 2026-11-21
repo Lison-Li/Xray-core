@@ -1,12 +1,12 @@
-name: QA B05 modern native original TCP UDP WAL receipt pinned once
+name: QA B05 modern native TCP UDP revoke-to-WAL receipt fence pinned once
 on:
   issue_comment:
     types: [created]
 permissions:
   contents: read
 jobs:
-  modern_ss2022_original_tcp_udp_physical_receipt:
-    if: ${{ github.event.issue.pull_request && github.event.issue.number == 2 && github.event.comment.body == '/qa-b05-modern-6ee10e63-receipt-once' && github.event.comment.user.login == 'Lison-Li' }}
+  modern_ss2022_tcp_udp_revoke_receipt_fence:
+    if: ${{ github.event.issue.pull_request && github.event.issue.number == 2 && github.event.comment.body == '/qa-b05-modern-553e9895-revoke-receipt-once' && github.event.comment.user.login == 'Lison-Li' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -21,7 +21,7 @@ jobs:
       - name: Exact native candidate checkout, no XrayR or proxy install
         uses: actions/checkout@v4
         with:
-          ref: 6ee10e63383eb404973886277118c5006fbecb28
+          ref: 553e9895e4f7de6e6a6b848978c5c7afe772a423
           fetch-depth: 0
           persist-credentials: false
       - name: Go 1.27.3
@@ -37,24 +37,27 @@ jobs:
           test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
           test "$GITHUB_EVENT_NAME" = issue_comment
           test "$(jq -r .issue.number "$GITHUB_EVENT_PATH")" = 2
-          test "$(jq -r .comment.body "$GITHUB_EVENT_PATH")" = '/qa-b05-modern-6ee10e63-receipt-once'
-          test "$(git rev-parse HEAD)" = 6ee10e63383eb404973886277118c5006fbecb28
-          test "$(git rev-parse HEAD^)" = 0c135f204c894cd1c2fe22a6a32400482b874e18
+          test "$(jq -r .comment.body "$GITHUB_EVENT_PATH")" = '/qa-b05-modern-553e9895-revoke-receipt-once'
+          test "$(git rev-parse HEAD)" = 553e9895e4f7de6e6a6b848978c5c7afe772a423
+          test "$(git rev-parse HEAD^)" = 6ee10e63383eb404973886277118c5006fbecb28
           test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
-          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/stream.go)" = 31775571b68e1f489ece93c6e64ee58c6ab08d71
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/stream.go)" = f92c6f534e51e008071e3a8c20dfd0f49a728eb8
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 415e48446c6c351be4537cf62566c985921a548f
-          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_tcp_udp_receipt.go)" = 7750fb5f83c7b8a07db452ff7727054f1f4d6040
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_tcp_udp_receipt.go)" = ec052334014051b8d2cb69e7b71d77638e4de670
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_tcp_udp_receipt_test.go)" = e3b75a08de31b3d42e4a2f65ecef9e3307506af5
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = e6ab812615128cb17d9d802d42547db9d32145f2
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/replay.go)" = f44fede07293a2e6e5934367cbc528338bc4bd54
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_receipt_revoke_fence_test.go)" = 7676b1b2ca7fb3e0b8f9dd5dc9dc6ed7ad2ff50d
           test "$(go version)" = 'go version go1.27.3 linux/amd64'
-          echo B05_MODERN_NATIVE_SOURCE_LOCKED_TCP_UDP_PHYSICAL_RECEIPT=PASS
+          echo B05_MODERN_NATIVE_SOURCE_LOCKED_REVOKE_POST_SOCKET_RECEIPT_FENCE=PASS
       - name: Actual two complete full native SS2022 package race tests and vet
         shell: bash
         run: |
           set -Eeuo pipefail
           timeout --signal=TERM --kill-after=15s 840s \
             go test -race -p=2 -count=2 -timeout=800s ./proxy/shadowsocks_2022
-          echo B05_MODERN_NATIVE_ORIGINAL_TCP_UDP_RECEIPT_RACE_FULL_PACKAGE=PASS
+          echo B05_MODERN_NATIVE_REVOKE_WAITED_TCP_UDP_WAL_CALLBACK_RACE_FULL_PACKAGE=PASS
           go vet -p=2 ./proxy/shadowsocks_2022
-          echo B05_MODERN_NATIVE_ORIGINAL_TCP_UDP_RECEIPT_GO_VET=PASS
+          echo B05_MODERN_NATIVE_REVOKE_RECEIPT_FENCE_GO_VET=PASS
           echo B05_SOURCE_UNIT_ONLY_NOT_EXTERNAL_CLIENT_OR_WAL_D1=YES
           echo B05_NO_ELF_ARTIFACT_PRODUCTION_OR_PROXY_RUNTIME=YES
