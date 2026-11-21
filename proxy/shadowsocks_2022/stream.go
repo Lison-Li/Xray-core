@@ -674,9 +674,13 @@ func TransportTCP(ctx context.Context, sessionPolicy policy.Session, reader buf.
 		// socket writer, not from the routing pipe or generic buf.Copy.
 		// Non-metered sessions retain the original copy path.
 		if metered, ok := link.Reader.(liB05NativeClientReceiptReader); ok {
-			physical, ok := writer.(*ServerStreamWriter)
+			// Only an authenticated MULTI-user session binds this physical
+			// writer to the exact live account and its revoke/receipt gate.
+			// Single-user SS2022 and relay must never borrow the multi-user
+			// proof based solely on a crafted strict Reader marker.
+			physical, ok := liB05BoundNativeOriginalTCPWriter(writer)
 			if !ok {
-				return errors.New("B05 native TCP receipt requires original encrypted server stream writer")
+				return errors.New("B05 strict native TCP denied: missing authenticated original physical writer / revoke fence")
 			}
 			return liB05CopyNativeTCPOriginalWithReceipt(metered, physical, func() { timer.Update() })
 		}

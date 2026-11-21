@@ -177,3 +177,20 @@ func LiB05NativeSS2022TCPOriginalSocketReceiptHookReady() bool { return true }
 // socket writes before the strict reader's one durable WAL callback.
 // A legacy singbridge UDP packet writer is NOT part of this modern core.
 func LiB05SS2022NativeUDPOriginalSocketReceiptHookReady() bool { return true }
+
+ 
+// liB05BoundNativeOriginalTCPWriter is deliberately package-private.
+// No caller outside the original authenticated native MultiUserInbound can
+// set its per-socket account binding. A strict WAL reader marker alone must
+// never activate a single-user or relay Writer without the corresponding
+// revocation-to-durable-receipt fence.
+func liB05BoundNativeOriginalTCPWriter(w buf.Writer) (*ServerStreamWriter, bool) {
+    original, ok := w.(*ServerStreamWriter)
+    if !ok || original == nil || original.liB05NativeTCPBinding == nil {
+        return nil, false
+    }
+    if original.liB05NativeTCPBinding.liB05Revoked.Load() {
+        return nil, false
+    }
+    return original, true
+}
