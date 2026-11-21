@@ -5,6 +5,7 @@ on:
   release:
     types: [published]
   push:
+    branches-ignore: [qa/b05-modern-classic-ss-original-udp-20261121]
   pull_request:
     types: [opened, synchronize, reopened]
 
