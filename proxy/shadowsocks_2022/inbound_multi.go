@@ -44,6 +44,9 @@ type MultiUserInbound struct {
 	userCount       atomic.Int64
 	saltFilter      *antireplay.ReplayFilter[[32]byte]
 	udpSessions     *UDPSessionManager
+	// Protected by the same inbound RWMutex as live user authentication.
+	// A successful user removal closes all accepted original TCP sockets.
+	tcpConnections map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{}
 	udpMasterCipher cipher.Block
 	policyManager   policy.Manager
 }
@@ -84,6 +87,7 @@ func NewMultiServer(ctx context.Context, config *MultiUserServerConfig) (*MultiU
 		usersByEmail:    utils.NewTypedSyncMap[string, *protocol.MemoryUser](),
 		saltFilter:      antireplay.NewMapFilter[[32]byte](60),
 		udpSessions:     NewUDPSessionManager(500 * time.Second),
+		tcpConnections:  make(map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{}),
 		udpMasterCipher: masterBlock,
 		policyManager:   v.GetFeature(policy.ManagerType()).(policy.Manager),
 	}
@@ -160,6 +164,13 @@ func (i *MultiUserInbound) RemoveUser(ctx context.Context, email string) error {
 
 	pskHash := DeriveUserPSKHash(u.Account.(*MemoryAccount).Key)
 	i.usersByHash.Delete(pskHash)
+	// The deletion lock excludes all new native TCP authentication. Close
+	// accepted original sockets while still holding this fence. This also
+	// interrupts a handshake authenticated immediately before deletion.
+	for binding := range i.tcpConnections[u] {
+		_ = binding.conn.Close()
+	}
+	delete(i.tcpConnections, u)
 	// Invalidate sessions that previously resolved this exact account. Merely
 	// removing the hash does NOT invalidate sessionItem.User/UserPSK caches.
 	// The handler's exclusive lock excludes new cached-user assignment.
@@ -210,6 +221,49 @@ func (i *MultiUserInbound) Process(ctx context.Context, network net.Network, con
 	return i.processUDP(ctx, connection, dispatcher)
 }
 
+// liB05TCPBinding is a unique, comparable handle for the original TCP socket.
+// A re-added account must never inherit bindings owned by the retired pointer.
+type liB05TCPBinding struct {
+	user *protocol.MemoryUser
+	conn net.Conn
+}
+
+// liB05BindTCPUser atomically checks live EIH identity and registers the
+// actual transport socket. RemoveUser holds the same exclusive lock, so
+// either the old binding is closed by removal or new binding is refused.
+func (i *MultiUserInbound) liB05BindTCPUser(hash [AESBlockSize]byte, conn net.Conn) (*liB05TCPBinding, bool) {
+	i.Lock()
+	defer i.Unlock()
+	user, ok := i.usersByHash.Load(hash)
+	if !ok || user == nil || conn == nil {
+		return nil, false
+	}
+	if i.tcpConnections == nil {
+		i.tcpConnections = make(map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{})
+	}
+	binding := &liB05TCPBinding{user: user, conn: conn}
+	if i.tcpConnections[user] == nil {
+		i.tcpConnections[user] = make(map[*liB05TCPBinding]struct{})
+	}
+	i.tcpConnections[user][binding] = struct{}{}
+	return binding, true
+}
+
+// Keep the original socket registered until it is actually closed.
+func (i *MultiUserInbound) liB05UnbindTCPUser(binding *liB05TCPBinding) {
+	if binding == nil {
+		return
+	}
+	i.Lock()
+	defer i.Unlock()
+	if active := i.tcpConnections[binding.user]; active != nil {
+		delete(active, binding)
+		if len(active) == 0 {
+			delete(i.tcpConnections, binding.user)
+		}
+	}
+}
+
 func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispatcher routing.Dispatcher) error {
 	defer conn.Close()
 
@@ -239,12 +293,21 @@ func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispat
 		return err
 	}
 
-	// Lookup user
-	user, ok := i.usersByHash.Load(decryptedHash)
+	// Authenticate and register the original TCP transport under the same
+	// user-removal fence. A plain usersByHash.Load could authorize a removed
+	// account immediately before deletion and leave its stream alive.
+	binding, ok := i.liB05BindTCPUser(decryptedHash, conn)
 	if !ok {
 		ResetTCPConn(conn)
 		return ErrInvalidRequest
 	}
+	defer func() {
+		// Close before untracking: RemoveUser must never observe a
+		// deregistered, still-writable old account socket.
+		_ = conn.Close()
+		i.liB05UnbindTCPUser(binding)
+	}()
+	user := binding.user
 	userPSK := user.Account.(*MemoryAccount).Key
 
 	reader, reqHeader, err := InitServerStream(conn, i.method, userPSK, saltSlice, salt, fixedChunk, i.saltFilter)
