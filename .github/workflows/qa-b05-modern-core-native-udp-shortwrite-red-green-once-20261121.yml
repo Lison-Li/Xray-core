@@ -1,0 +1,82 @@
+name: B05 latest native SS2022 original encrypted UDP socket short-write RED GREEN regression, no binary
+on:
+  push:
+    branches: [qa/b05-modern-ss2022-native-udp-socket-shortwrite-20261121]
+    paths: [.github/workflows/qa-b05-modern-core-native-udp-shortwrite-red-green-once-20261121.yml]
+permissions: {contents: read}
+concurrency:
+  group: qa-b05-modern-core-physical-writer-short-return-20261121
+  cancel-in-progress: false
+jobs:
+  exact_modern_core_original_socket_shortwrite_red_green:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/qa/b05-modern-ss2022-native-udp-socket-shortwrite-20261121' &&
+      github.event.head_commit.message == '[qa-b05-modern-native-udp-shortwrite-red-green-once-20261121]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 19
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: amd64
+      GOMAXPROCS: '4'
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 3, persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: false}
+      - name: Immutable new modern core main lineage, two-file scope, no product/Worker rollout
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 11ed0145a90d243e849f2ee55de21014f031fd10
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_udp_socket_shortwrite_test.go)" = fc367e30aec418d4766bca7de9c238fc020704ab
+          git cat-file -e 'a4a3dff5b20c2faae567b742c172c7b95e75c083^{commit}'
+          test "$(git rev-parse a4a3dff5b20c2faae567b742c172c7b95e75c083:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 1556c330f9f18e9ecb656a382ef1670621f3f97a
+          test "$(git rev-list --count a4a3dff5b20c2faae567b742c172c7b95e75c083..HEAD)" = 3
+          test "$(git diff --name-only a4a3dff5b20c2faae567b742c172c7b95e75c083 HEAD | sort | wc -l)" = 3
+          grep -Fq 'return io.ErrShortWrite' proxy/shadowsocks_2022/shadowsocks_2022.go
+          echo B05_MODERN_CORE_BASE_ANCHORED_EXACT_TRUE_NATIVE_UDP_SHORTWRITE_SOURCE=PASS
+      - name: True RED on original main socket write (reject only expected unit assertion, not compiler failure)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -m 700 -p "$RUNNER_TEMP/b05-modern"
+          file=proxy/shadowsocks_2022/shadowsocks_2022.go
+          cp "$file" "$RUNNER_TEMP/b05-modern/updated.go"
+          git show a4a3dff5b20c2faae567b742c172c7b95e75c083:proxy/shadowsocks_2022/shadowsocks_2022.go > "$file"
+          restore(){ cp "$RUNNER_TEMP/b05-modern/updated.go" "$file"; }
+          trap restore EXIT
+          set +e
+          timeout --signal=TERM --kill-after=12s 570s go test -p=2 -count=1 -timeout=540s -run '^TestB05ModernSS2022' ./proxy/shadowsocks_2022 > "$RUNNER_TEMP/b05-modern/red.log" 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 0 && test "$rc" -ne 124 && test "$rc" -ne 137
+          grep -Fq 'TestB05ModernSS2022ActualOriginalUDPSocketWriteMustRejectShortWrite/short-original-datagram-no-OS-error' "$RUNNER_TEMP/b05-modern/red.log"
+          grep -Fq 'original UDP socket write acceptance=<nil>, expected=short write' "$RUNNER_TEMP/b05-modern/red.log"
+          if grep -Eqi '(^# |undefined:|no required module|build failed|panic:)' "$RUNNER_TEMP/b05-modern/red.log";then
+            echo B05_OLD_CORE_COMPILATION_ERROR_NOT_ACCEPTED_AS_RED
+            exit 1
+          fi
+          echo B05_MODERN_CORE_ACTUAL_OLD_NATIVE_SOCKET_SHORTWRITE_EXPECTED_RED=PASS
+      - name: True GREEN on fixed modern core native actual final encrypted UDP socket and original package vet
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git hash-object proxy/shadowsocks_2022/shadowsocks_2022.go)" = 11ed0145a90d243e849f2ee55de21014f031fd10
+          timeout --signal=TERM --kill-after=12s 210s             go test -p=2 -count=1 -timeout=185s -v               -run '^TestB05ModernSS2022' ./proxy/shadowsocks_2022
+          timeout --signal=TERM --kill-after=12s 240s go vet -p=2 ./proxy/shadowsocks_2022
+          echo B05_MODERN_CORE_ACTUAL_NATIVE_UDP_ORIGINAL_SOCKET_FULL_SHORT_ERROR_MATRIX_AND_VET_GREEN=PASS
+          echo B05_NO_PROXY_INSTALL_OR_RUN=YES
+          echo B05_NO_PRODUCTION_OR_LIVE_NODE_MODIFICATION=YES
+          echo B05_NO_BINARY_OR_ARTIFACT=YES
