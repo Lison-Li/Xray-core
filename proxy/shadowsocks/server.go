@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"context"
+    "io"
 	"os"
 	"time"
 
@@ -108,8 +109,48 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	}
 }
 
+// LiB05NativeSSUDPEncryptedSocketReceiptHookReady is a compile-time
+// source-proven QA capability, NOT an admission or release-enable flag.
+// XrayR must independently require its exact nonproduction authenticated
+// classic SS scope and explicit strict Writer flags before enabling UDP.
+func LiB05NativeSSUDPEncryptedSocketReceiptHookReady() bool { return true }
+
+// Write the complete ORIGINAL encrypted datagram. Framing and salt bytes
+// are excluded from the billing reservation; a short write is UNKNOWN.
+func liB05SSNativeFinalEncryptedSocketWrite(writer io.Writer, encrypted []byte) error {
+    n,err:=writer.Write(encrypted)
+    if err!=nil{return err}
+    if n!=len(encrypted){return io.ErrShortWrite}
+    return nil
+}
+
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+    // No QA flags -> existing void callback/packet behavior unchanged.
+    strictNativeUDP:=os.Getenv("XRAYR_LI_B05_STRICT")=="1" &&
+        os.Getenv("XRAYR_LI_B05_NATIVE_SS_UDP_QA")=="1" &&
+        os.Getenv("XRAYR_LI_B05_NATIVE_SS_UDP_FINAL_WRITER_ACK")=="1"
+    var udpServer *udp.Dispatcher
+    if strictNativeUDP {
+        udpServer=udp.NewDispatcherWithFinalWriterReceipt(dispatcher,
+            func(ctx context.Context, packet *udp_proto.Packet) error {
+                request:=protocol.RequestHeaderFromContext(ctx)
+                payload:=packet.Payload
+                if request==nil || request.User==nil {
+                    payload.Release()
+                    return errors.New("B05 original classic SS UDP denied: no authenticated user")
+                }
+                if payload.UDP!=nil {
+                    request=&protocol.RequestHeader{User:request.User,
+                        Address:payload.UDP.Address,Port:payload.UDP.Port}
+                }
+                data,err:=EncodeUDPPacket(request,payload.Bytes())
+                payload.Release()
+                if err!=nil{return errors.New("failed to encode original classic SS UDP response").Base(err)}
+                defer data.Release()
+                return liB05SSNativeFinalEncryptedSocketWrite(conn,data.Bytes())
+            })
+    } else {
+        udpServer = udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		payload := packet.Payload
 		if request == nil {
@@ -135,6 +176,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 		conn.Write(data.Bytes())
 		data.Release()
 	})
+    }
 	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)
