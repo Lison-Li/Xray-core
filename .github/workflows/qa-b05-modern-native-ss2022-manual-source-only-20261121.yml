@@ -1,6 +1,5 @@
 name: B05 modern native SS2022 pinned candidate manual RED GREEN UDP revoke/PSK, no binary
 on:
-  create:
   workflow_dispatch:
     inputs:
       purpose:
@@ -17,14 +16,9 @@ jobs:
   manual_exact_modern_core_original_socket_shortwrite_and_user_revoke_red_green:
     if: >-
       github.repository == 'Lison-Li/Xray-core' &&
-      (
-        (github.event_name == 'workflow_dispatch' &&
-         github.ref == 'refs/heads/main' &&
-         inputs.purpose == 'verify-locked-source') ||
-        (github.event_name == 'create' &&
-         github.event.ref_type == 'branch' &&
-         github.event.ref == 'qa-b05-modern-ss2022-self-verify-20261121-c249df44')
-      )
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.purpose == 'verify-locked-source'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -52,18 +46,8 @@ jobs:
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
           test "$(git rev-parse HEAD)" = c249df44131f66bd2b6f401ea2723849d3ad133d
-          # Source checkout is immutable; accept ONLY manual dispatch on main,
-          # or this one new owner-controlled QA ref creation event.
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            test "$GITHUB_REF" = 'refs/heads/main'
-          elif [[ "$GITHUB_EVENT_NAME" == create ]]; then
-            test "$GITHUB_REF" = 'refs/heads/qa-b05-modern-ss2022-self-verify-20261121-c249df44'
-            test "$(jq -r .ref_type "$GITHUB_EVENT_PATH")" = branch
-            test "$(jq -r .ref "$GITHUB_EVENT_PATH")" = 'qa-b05-modern-ss2022-self-verify-20261121-c249df44'
-          else
-            echo B05_MODERN_QA_UNKNOWN_EVENT_REJECTED
-            exit 1
-          fi
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = 'refs/heads/main'
           test "$(go version)" = 'go version go1.27.3 linux/amd64'
           test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 44f18b171930e26db437fb14fe19928713a08ca0
