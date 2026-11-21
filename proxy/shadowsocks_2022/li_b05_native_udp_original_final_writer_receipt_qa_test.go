@@ -5,6 +5,7 @@ import (
     "errors"
     "io"
     "testing"
+    "strings"
 
     B "github.com/sagernet/sing/common/buf"
     M "github.com/sagernet/sing/common/metadata"
@@ -59,6 +60,111 @@ func b05SS2022NativeOriginalTestFlags(t *testing.T) {
         "XRAYR_LI_B05_NATIVE_SS2022_UDP_QA",
         "XRAYR_LI_B05_NATIVE_SS2022_UDP_FINAL_WRITER_ACK",
     } {t.Setenv(key,"1")}
+}
+
+// This regression exercises the ACTUAL source-pinned upstream-fork native
+// encrypted UDP Writer, not a Controller-level or Dispatcher-level imitation.
+// The external real Mihomo test must independently prove actual packet arrival.
+func TestB05SS2022NativePublicOriginalEncryptedWriterExactExternalSourceAndTwoFlags(t *testing.T) {
+    b05SS2022NativeOriginalTestFlags(t)
+    const pub="XRAYR_LI_B05_PUBLIC_SS2022_NATIVE_QA"
+    const ack="XRAYR_LI_B05_PUBLIC_SS2022_NATIVE_WRITER_ACK"
+    t.Setenv(pub,"0")
+    t.Setenv(ack,"0")
+
+    publicInbound:=func() *session.Inbound {
+        return &session.Inbound{
+            Name:"shadowsocks-2022-multi",
+            Tag:"Shadowsocks_0.0.0.0_54687",
+            Source:net.Destination{
+                Network:net.Network_UDP,
+                Address:net.ParseAddress("8.8.8.8"),Port:34687,
+            },
+            User:&protocol.MemoryUser{Email:"Shadowsocks_0.0.0.0_54687|qa-user@test.invalid|1"},
+        }
+    }
+    accept:=func(in *session.Inbound)error {
+        ctx:=session.ContextWithInbound(context.Background(),in)
+        r:=&b05SS2022OriginalReceiptProbe{}
+        c:=&b05SS2022OriginalPacketConnProbe{mutatePacket:true}
+        wrapped,err:=liB05SS2022NativeUDPWrapOriginal(ctx,r,c)
+        if err!=nil {return err}
+        if wrapped==c{return io.ErrClosedPipe}
+        payload:=B.As([]byte("original-udp-public-qa-24"))
+        originalSize:=int32(payload.Len())
+        if err:=wrapped.WritePacket(payload,M.Socksaddr{});err!=nil{return err}
+        if c.calls!=1 || len(r.accepted)!=1 || r.accepted[0]!=originalSize || len(r.failed)!=0 {
+            return io.ErrShortWrite
+        }
+        return nil
+    }
+    reject:=func(name string,in *session.Inbound){
+        t.Helper()
+        if err:=accept(in);err==nil {
+            t.Fatalf("unverified external original encrypted UDP Writer admitted: %s",name)
+        }
+    }
+    reject("default-disabled",publicInbound())
+    t.Setenv(pub,"1")
+    reject("first-optin-only",publicInbound())
+    t.Setenv(pub,"0")
+    t.Setenv(ack,"1")
+    reject("second-optin-only",publicInbound())
+    // Public approval must NOT be a blanket bypass for the old loopback
+    // source; the exact canonical public listener and a routable source
+    // are mandatory for the old lower original post-socket receipt.
+    t.Setenv(pub,"1")
+    if err:=accept(publicInbound());err!=nil {
+        t.Fatalf("real authenticated external SS2022 UDP post-socket Writer refused: %v",err)
+    }
+
+    malformed:=[]struct{
+        name string
+        alter func(*session.Inbound)
+    }{
+        {"wrong-2022-identity",func(i *session.Inbound){i.Name="shadowsocks-2022-relay"}},
+        {"wrong-node-tag",func(i *session.Inbound){i.Tag="Shadowsocks_0.0.0.0_54688"}},
+        {"private-tag",func(i *session.Inbound){i.Tag="Shadowsocks_127.0.0.1_54687"}},
+        {"fake-leading-zero",func(i *session.Inbound){i.Tag="Shadowsocks_0.0.0.0_054687"}},
+        {"public-ipv6",func(i *session.Inbound){i.Source.Address=net.ParseAddress("2001:4860:4860::8888")}},
+        {"loopback-client",func(i *session.Inbound){i.Source.Address=net.ParseAddress("127.0.0.1")}},
+        {"private-client",func(i *session.Inbound){i.Source.Address=net.ParseAddress("192.168.1.8")}},
+        {"link-local-client",func(i *session.Inbound){i.Source.Address=net.ParseAddress("169.254.1.8")}},
+        {"empty-source",func(i *session.Inbound){i.Source.Address=nil}},
+        {"missing-port",func(i *session.Inbound){i.Source.Port=0}},
+        {"wrong-network",func(i *session.Inbound){i.Source.Network=net.Network_TCP}},
+        {"missing-user",func(i *session.Inbound){i.User=nil}},
+        {"missing-user-identity",func(i *session.Inbound){i.User.Email=""}},
+    }
+    for _,tc:=range malformed {
+        t.Run(tc.name,func(t *testing.T){
+            in:=publicInbound();tc.alter(in)
+            reject(tc.name,in)
+        })
+    }
+    for _,flag:=range []string{
+        "XRAYR_LI_B05_STRICT",
+        "XRAYR_LI_B05_PUBLIC_MULTI_NODE",
+        "XRAYR_LI_B05_PUBLIC_MULTI_WRITER_ACK",
+        "XRAYR_LI_B05_PUBLIC_MULTI_13_NATIVE_QA",
+        "XRAYR_LI_B05_PUBLIC_MULTI_13_NATIVE_WRITER_ACK",
+        "XRAYR_LI_B05_ALL13_UDP_TUNNEL_LOOPBACK_QA",
+        "XRAYR_LI_B05_ALL13_UDP_TUNNEL_WRITER_ACK",
+        "XRAYR_LI_B05_NATIVE_SS2022_UDP_QA",
+        "XRAYR_LI_B05_NATIVE_SS2022_UDP_FINAL_WRITER_ACK",
+    } {
+        t.Run("missing-core-"+strings.TrimPrefix(flag,"XRAYR_LI_"),func(t *testing.T){
+            t.Setenv(flag,"0")
+            reject("missing-"+flag,publicInbound())
+        })
+    }
+    // Keep original local source pathway identical without public opt-in.
+    t.Setenv(pub,"0")
+    t.Setenv(ack,"0")
+    if err:=accept(session.InboundFromContext(b05SS2022NativeOriginalTestContext()));err!=nil {
+        t.Fatalf("old genuinely authenticated strict loopback UDP broken: %v",err)
+    }
+    t.Log("B05_SS2022_CORE_PUBLIC_NATIVE_AES128_AES256_EXTERNAL_EXACT_ORIGINAL_UDP_PACKETCONN_WRITER_AND_2FLAGS=PASS_UNIT")
 }
 
 func TestB05SS2022NativeOriginalUDPFinalWriterRequiresPostPacketConnReceipt(t *testing.T) {

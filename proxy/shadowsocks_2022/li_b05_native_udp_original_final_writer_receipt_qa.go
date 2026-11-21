@@ -10,6 +10,7 @@ import (
     "context"
     "fmt"
     "math"
+    stdnet "net"
     "os"
     "strconv"
     "strings"
@@ -114,15 +115,38 @@ func liB05SS2022NativeUDPWrapOriginal(ctx context.Context, reader buf.Reader, or
     if in==nil || in.Name!="shadowsocks-2022-multi" ||
         in.User==nil || in.User.Email=="" ||
         in.Source.Network!=net.Network_UDP ||
-        in.Source.Address==nil || in.Source.Address.String()!="127.0.0.1" ||
-        in.Source.Port==0 || original==nil || reader==nil {
+        in.Source.Address==nil || in.Source.Port==0 ||
+        original==nil || reader==nil {
         return fail()
     }
-    const prefix="Shadowsocks_127.0.0.1_"
-    if !strings.HasPrefix(in.Tag,prefix) {return fail()}
-    portText:=strings.TrimPrefix(in.Tag,prefix)
-    port,err:=strconv.Atoi(portText)
-    if err!=nil || port<1024 || port>65535 || strconv.Itoa(port)!=portText {return fail()}
+    // The original source-pinned native encrypted PacketConn Writer was
+    // loopback-only even after the XrayR Controller/Dispatcher had verified
+    // public TCP+UDP on the single temporary 54687 QA port. A genuine
+    // external Mihomo packet consequently timed out at this fourth gate.
+    //
+    // Keep the OLD default local scope unchanged. Public native SS2022 is
+    // a NEW independent two-switch capability; a half-opted candidate
+    // must fail closed before a Writer callback or any WAL reservation.
+    publicQA:=os.Getenv("XRAYR_LI_B05_PUBLIC_SS2022_NATIVE_QA")=="1"
+    publicAck:=os.Getenv("XRAYR_LI_B05_PUBLIC_SS2022_NATIVE_WRITER_ACK")=="1"
+    if publicQA!=publicAck {return fail()}
+    if publicQA {
+        ip:=stdnet.ParseIP(in.Source.Address.String())
+        if in.Tag!="Shadowsocks_0.0.0.0_54687" ||
+            ip==nil || ip.To4()==nil || !ip.IsGlobalUnicast() ||
+            ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+            return fail()
+        }
+    } else {
+        if in.Source.Address.String()!="127.0.0.1" {return fail()}
+        const prefix="Shadowsocks_127.0.0.1_"
+        if !strings.HasPrefix(in.Tag,prefix) {return fail()}
+        portText:=strings.TrimPrefix(in.Tag,prefix)
+        port,err:=strconv.Atoi(portText)
+        if err!=nil || port<1024 || port>65535 || strconv.Itoa(port)!=portText {
+            return fail()
+        }
+    }
     receipt,ok:=reader.(liB05SS2022FinalUDPAcceptance)
     if !ok {return fail()}
     return &liB05SS2022NativeOriginalFinalWriter{PacketConn:original,receipt:receipt},nil
