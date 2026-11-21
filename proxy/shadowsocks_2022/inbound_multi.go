@@ -33,7 +33,9 @@ func init() {
 }
 
 type MultiUserInbound struct {
-	sync.Mutex
+	// Removal needs exclusive access while UDP authenticates/assigns
+	// session users. Multiple active UDP decryptions may share read lock.
+	sync.RWMutex
 	networks        []net.Network
 	method          *CipherMethod
 	masterPSK       []byte
@@ -152,6 +154,12 @@ func (i *MultiUserInbound) RemoveUser(ctx context.Context, email string) error {
 
 	pskHash := DeriveUserPSKHash(u.Account.(*MemoryAccount).Key)
 	i.usersByHash.Delete(pskHash)
+	// Invalidate sessions that previously resolved this exact account. Merely
+	// removing the hash does NOT invalidate sessionItem.User/UserPSK caches.
+	// The handler's exclusive lock excludes new cached-user assignment.
+	if i.udpSessions != nil {
+		i.udpSessions.RevokeUser(u)
+	}
 	i.userCount.Add(-1)
 
 	return nil
@@ -303,39 +311,48 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 				continue
 			}
 
-			var userPSK []byte
-			var currentUser *protocol.MemoryUser
+			// Every native UDP packet must resolve its authenticated EIH against
+			// the LIVE user map, including packets of an already cached SessionID.
+			// A removed user cannot rely on sessionItem.UserPSK to bypass revoke.
+			decryptedHash := DecryptUDPEIH(i.udpMasterCipher, rawHeader[:], packetBytes[16:32])
+			i.RLock()
 			sessionItem.Lock()
-			currentUser = sessionItem.User
-			userPSK = sessionItem.UserPSK
+			cached := sessionItem.User
+			revoked := sessionItem.revoked.Load()
 			sessionItem.Unlock()
-
-			if currentUser == nil {
-				// Decrypt EIH
-				decryptedHash := DecryptUDPEIH(i.udpMasterCipher, rawHeader[:], packetBytes[16:32])
-
-				user, ok := i.usersByHash.Load(decryptedHash)
-				if !ok {
-					b.Release()
-					continue
-				}
-				currentUser = user
-				userPSK = user.Account.(*MemoryAccount).Key
+			currentUser, userPSK, active := i.liB05LiveUDPUser(decryptedHash, cached)
+			if revoked || !active {
+				i.RUnlock()
+				b.Release()
+				continue
 			}
 
 			decoded, err := sessionItem.DecryptAESPayload(i.method, userPSK, sessionID, packetID, rawHeader[:], packetBytes[32:])
 			b.Release()
 			if err != nil {
+				i.RUnlock()
 				continue
 			}
 
 			sessionItem.Lock()
+			if sessionItem.revoked.Load() || (sessionItem.User != nil && sessionItem.User != currentUser) {
+				sessionItem.Unlock()
+				i.RUnlock()
+				continue
+			}
 			if sessionItem.User == nil {
 				sessionItem.User = currentUser
 				sessionItem.UserPSK = userPSK
 			}
 			sessionItem.Unlock()
+			i.RUnlock()
 
+			// Exclusive RemoveUser may have invalidated the session immediately
+			// after the read lock. The downstream final socket and EnsureLink
+			// independently reject the revoked bit as well.
+			if sessionItem.revoked.Load() {
+				continue
+			}
 			link := sessionItem.link.Load()
 			if link != nil {
 				sessionItem.UpdateConn(conn)
@@ -349,6 +366,9 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 				}
 			}
 
+			if sessionItem.revoked.Load() {
+				continue
+			}
 			pBuf := buf.New()
 			pBuf.Write(decoded.Payload)
 			pBuf.UDP = &decoded.Destination
@@ -359,4 +379,21 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 
 func (i *MultiUserInbound) encodeServerUDPPacket(clientSessionID uint64, userPSK []byte, dest net.Destination, payload []byte) ([]byte, error) {
 	return i.udpSessions.EncodeServerPacket(i.method, userPSK, clientSessionID, dest, payload)
+}
+
+// liB05LiveUDPUser is called under MultiUserInbound.RLock, held across
+// authenticated packet decryption and cached session ownership assignment.
+// The cached pointer may ONLY equal a user still present under the exact
+// EIH-derived hash. In particular RemoveUser + re-add with the same key
+// cannot revive an old session pointer/nonce/link.
+func (i *MultiUserInbound) liB05LiveUDPUser(hash [AESBlockSize]byte, cached *protocol.MemoryUser) (*protocol.MemoryUser, []byte, bool) {
+	user, ok := i.usersByHash.Load(hash)
+	if !ok || user == nil || (cached != nil && cached != user) {
+		return nil, nil, false
+	}
+	account, ok := user.Account.(*MemoryAccount)
+	if !ok || len(account.Key) != i.method.KeySaltLength {
+		return nil, nil, false
+	}
+	return user, account.Key, true
 }
