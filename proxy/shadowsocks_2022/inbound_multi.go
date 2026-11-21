@@ -128,6 +128,12 @@ func (i *MultiUserInbound) AddUser(ctx context.Context, u *protocol.MemoryUser) 
 	}
 
 	pskHash := DeriveUserPSKHash(memAcc.Key)
+	// Distinct accounts MUST NOT share a PSK/EIH identity: otherwise the
+	// second add silently replaces the first user's hash mapping and traffic
+	// can be attributed to the wrong UID before either account is deleted.
+	if _, exists := i.usersByHash.Load(pskHash); exists {
+		return errors.New("duplicate shadowsocks 2022 user PSK identity refused")
+	}
 	i.usersByHash.Store(pskHash, u)
 	if emailKey != "" {
 		i.usersByEmail.Store(emailKey, u)
