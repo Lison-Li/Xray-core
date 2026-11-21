@@ -1,5 +1,6 @@
 name: B05 modern native SS2022 pinned candidate manual RED GREEN UDP revoke/PSK, no binary
 on:
+  create:
   workflow_dispatch:
     inputs:
       purpose:
@@ -16,9 +17,14 @@ jobs:
   manual_exact_modern_core_original_socket_shortwrite_and_user_revoke_red_green:
     if: >-
       github.repository == 'Lison-Li/Xray-core' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main' &&
-      inputs.purpose == 'verify-locked-source'
+      (
+        (github.event_name == 'workflow_dispatch' &&
+         github.ref == 'refs/heads/main' &&
+         inputs.purpose == 'verify-locked-source') ||
+        (github.event_name == 'create' &&
+         github.event.ref_type == 'branch' &&
+         github.event.ref == 'qa-b05-modern-ss2022-self-verify-20261121-c249df44')
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -34,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 'f643c1fd89526fd3a340037948dd89a78068bc33'
+          ref: 'c249df44131f66bd2b6f401ea2723849d3ad133d'
           fetch-depth: 16
           persist-credentials: false
       - uses: actions/setup-go@v6
@@ -45,19 +51,29 @@ jobs:
           set -Eeuo pipefail
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
-          test "$(git rev-parse HEAD)" = f643c1fd89526fd3a340037948dd89a78068bc33
-          test "$GITHUB_REF" = 'refs/heads/main'
-          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$(git rev-parse HEAD)" = c249df44131f66bd2b6f401ea2723849d3ad133d
+          # Source checkout is immutable; accept ONLY manual dispatch on main,
+          # or this one new owner-controlled QA ref creation event.
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            test "$GITHUB_REF" = 'refs/heads/main'
+          elif [[ "$GITHUB_EVENT_NAME" == create ]]; then
+            test "$GITHUB_REF" = 'refs/heads/qa-b05-modern-ss2022-self-verify-20261121-c249df44'
+            test "$(jq -r .ref_type "$GITHUB_EVENT_PATH")" = branch
+            test "$(jq -r .ref "$GITHUB_EVENT_PATH")" = 'qa-b05-modern-ss2022-self-verify-20261121-c249df44'
+          else
+            echo B05_MODERN_QA_UNKNOWN_EVENT_REJECTED
+            exit 1
+          fi
           test "$(go version)" = 'go version go1.27.3 linux/amd64'
           test "$(git rev-parse HEAD:go.mod)" = 06576d22bc285cef3087bbb3fb7f02b1e7938058
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 44f18b171930e26db437fb14fe19928713a08ca0
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = bcf9fdcce3b6fc402d12ab686164264d12bf711b
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/replay.go)" = 8d6c527d6ca0edeb1c965e39a62ab7e1833139a8
-          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_modern_native_udp_cached_user_revoke_test.go)" = 637819d66f4374568710df25f93a363d15a6c4fe
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_modern_native_udp_cached_user_revoke_test.go)" = d94785963c4178ba5e2c30bad222a5a02ad443d7
           test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_udp_socket_shortwrite_test.go)" = fc367e30aec418d4766bca7de9c238fc020704ab
           git cat-file -e 'a4a3dff5b20c2faae567b742c172c7b95e75c083^{commit}'
           test "$(git rev-parse a4a3dff5b20c2faae567b742c172c7b95e75c083:proxy/shadowsocks_2022/shadowsocks_2022.go)" = 1556c330f9f18e9ecb656a382ef1670621f3f97a
-          test "$(git rev-list --count a4a3dff5b20c2faae567b742c172c7b95e75c083..HEAD)" = 13
+          test "$(git rev-list --count a4a3dff5b20c2faae567b742c172c7b95e75c083..HEAD)" = 14
           test "$(git diff --name-only a4a3dff5b20c2faae567b742c172c7b95e75c083 HEAD | sort | wc -l)" = 6
           grep -Fq 'return io.ErrShortWrite' proxy/shadowsocks_2022/shadowsocks_2022.go
           grep -Fq 'i.udpSessions.RevokeUser(u)' proxy/shadowsocks_2022/inbound_multi.go
