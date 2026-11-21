@@ -141,33 +141,17 @@ func handleUDPResponse(s *ServerUDPSession, link *transport.Link, fallbackDest n
 	for {
 		resMb, err := link.Reader.ReadMultiBuffer()
 		if err != nil {
+			// A strict WAL reader may have fsynced an intent before its
+			// underlying transport returned a simultaneous read error.
+			if receipt, ok := link.Reader.(liB05NativePacketReceiptReader); ok {
+				receipt.LiOnWriteFailed(err)
+			}
+			buf.ReleaseMulti(resMb)
 			return
 		}
 		s.timer.Update()
-		for i, rb := range resMb {
-			b := rb.Bytes()
-			if encode != nil {
-				replyDest := fallbackDest
-				if rb.UDP != nil {
-					replyDest = *rb.UDP
-				}
-				encPacket, err := encode(replyDest, b)
-				rb.Release()
-				if err != nil {
-					continue
-				}
-				if err := s.WriteToClient(encPacket); err != nil {
-					buf.ReleaseMulti(resMb[i+1:])
-					return
-				}
-			} else {
-				err := s.WriteToClient(b)
-				rb.Release()
-				if err != nil {
-					buf.ReleaseMulti(resMb[i+1:])
-					return
-				}
-			}
+		if err := liB05WriteNativeUDPBatchWithReceipt(s, resMb, fallbackDest, encode, link.Reader); err != nil {
+			return
 		}
 	}
 }

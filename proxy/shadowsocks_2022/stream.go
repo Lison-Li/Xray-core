@@ -666,6 +666,17 @@ func TransportTCP(ctx context.Context, sessionPolicy policy.Session, reader buf.
 		if c, ok := writer.(io.Closer); ok {
 			defer c.Close()
 		}
+		// When the XrayR ledger reader fsyncs a pre-write reservation,
+		// the receipt MUST come from the actual native encrypted client
+		// socket writer, not from the routing pipe or generic buf.Copy.
+		// Non-metered sessions retain the original copy path.
+		if metered, ok := link.Reader.(liB05NativeClientReceiptReader); ok {
+			physical, ok := writer.(*ServerStreamWriter)
+			if !ok {
+				return errors.New("B05 native TCP receipt requires original encrypted server stream writer")
+			}
+			return liB05CopyNativeTCPOriginalWithReceipt(metered, physical, func() { timer.Update() })
+		}
 		return buf.Copy(link.Reader, writer, buf.UpdateActivity(timer))
 	}
 
