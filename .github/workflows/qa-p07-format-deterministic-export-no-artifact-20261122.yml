@@ -1,0 +1,56 @@
+name: P07 mainbased native-core gofumpt canonical source export once no artifact
+on:
+  push:
+    branches: [integration/p07-native-core-6737-on-latest-main-20261122]
+    paths: [.github/workflows/qa-p07-format-deterministic-export-no-artifact-20261122.yml]
+permissions: {contents: read}
+concurrency:
+  group: p07-mainbased-6737-format-source-export-once
+  cancel-in-progress: false
+jobs:
+  canonical_source_format_export:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/integration/p07-native-core-6737-on-latest-main-20261122' &&
+      github.event.head_commit.message == '[qa-p07-mainbased-formatter-emit-once-20261122]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: off
+      GOFLAGS: -mod=readonly
+      GOPROXY: https://proxy.golang.org
+      GOSUMDB: sum.golang.org
+      GOMAXPROCS: '4'
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 4, persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: false}
+      - name: Canonical repository gofumpt; read-only GitHub token; emit changed source for offline connector transplant
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "$(git rev-parse HEAD^)" = b5943f99428a7bfad3485fa11213bd4d35511087
+          test -z "$(git status --porcelain)"
+          go run ./infra/vformat/main.go -mode format
+          mapfile -t changed < <(git diff --name-only --diff-filter=M)
+          test "${#changed[@]}" -ge 18
+          test "${#changed[@]}" -le 23
+          git diff --check
+          git diff --name-only | while IFS= read -r f; do
+            [[ "$f" == *.go && "$f" != *..* && -f "$f" ]] || exit 1
+            git diff --name-only 0091c4bc88cb23dc24e360dd0ce3b053f6eaa93d 76de52fd3a36d4274f46206eabf2f5b3cc8da70f -- "$f" | grep -Fxq "$f"
+          done
+          echo "P07_FORMAT_FILE_COUNT=${#changed[@]}"
+          for f in "${changed[@]}"; do
+            echo "P07_FMT_BEGIN $f $(git hash-object "$f")"
+            base64 -w 200 "$f" | sed 's/^/P07_FMT_DATA /'
+            echo "P07_FMT_END $f"
+          done
+          echo P07_CANONICAL_GO127_GOFUMPT_SOURCES_READY_FOR_CONNECTOR_COPY=PASS
+          echo P07_NO_ARTIFACT_NO_BINARY_NO_PRODUCTION=YES
