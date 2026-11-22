@@ -1,0 +1,62 @@
+name: B05 modern fork VMess first Writer and Trojan native UDP real receipt source tests
+on:
+  push:
+    branches: [qa/b05-modern-vmess-trojan-original-writer-20261122]
+    paths: [.github/workflows/qa-b05-modern-vmess-trojan-original-socket-proof-20261122.yml]
+permissions: {contents: read}
+concurrency:
+  group: core-b05-writer-fork-20261122
+  cancel-in-progress: false
+jobs:
+  github_hosted_source_tests_only_no_proxy_or_product_elf:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/qa/b05-modern-vmess-trojan-original-writer-20261122' &&
+      github.event.head_commit.message == '[qa-b05-modern-vmess-trojan-actual-core-writer-regression-20261122]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: off
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: '0'
+      GOMAXPROCS: '4'
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 2, persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.27.3', cache: false}
+      - name: Exact immutable modern-core strict post-Writer QA patch, unit tests and Go package compilation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          set +x
+          umask 077
+          test "$GITHUB_REF" = refs/heads/qa/b05-modern-vmess-trojan-original-writer-20261122
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = 6737f19b1a2041421cb9c0cb766c5b06e40abdff
+          test "$(git rev-parse HEAD:proxy/vmess/inbound/inbound.go)" = 2636eac705bcfef92eccc9c71ffddebdbe0deae2
+          test "$(git rev-parse HEAD:proxy/trojan/server.go)" = e9d7df373212b63ad6b9f7e8964cb7f6760ea321
+          test "$(git rev-parse HEAD:proxy/trojan/li_b05_original_socket_writer_qa_gate_test.go)" = 508ab244f308e3c45c7601209ea9fcddf922fdca
+          test "$(git rev-parse HEAD:common/buf/copy.go)" = 83a3628d164560213ca1faa27cb7981d6228f4e9
+          test "$(git rev-parse HEAD:transport/internet/udp/dispatcher.go)" = eaac2172f80e8f64e38975148158fe98814bdc38
+          test "$(git rev-parse HEAD:go.mod)" = $(git hash-object go.mod)
+          grep -Fq 'if _, b05FinalWriterReader := input.(interface{ LiOnWriteAccepted(int32) error }); !b05FinalWriterReader' proxy/vmess/inbound/inbound.go
+          grep -Fq 'NewDispatcherWithFinalWriterReceipt(dispatcher, writeResponse)' proxy/trojan/server.go
+          grep -Fq 'QA_ALL13_REAL_NATIVE_STRICT_WAL' proxy/trojan/server.go
+          echo B05_CORE_FORK_QA_ONLY_SOURCE_GATES=PASS
+          go version
+          timeout --signal=TERM --kill-after=12s 240s go mod download
+          timeout --signal=TERM --kill-after=12s 120s go mod verify
+          echo B05_CORE_FORK_GO_MOD_VERIFY=PASS
+          timeout --signal=TERM --kill-after=12s 1000s go test -p=3 -count=1 -timeout=960s -run '^(TestB05TrojanOriginalSocketWriterGateDefaultDenialAndExactLoopback|TestB05TrojanUDPReceiptOnlyAfterCallbackReturnsFromFinalSocketWriter|TestB05NativeUDPOriginalFinalWriterRefusesUnmeteredSourceBeforeSocket)$' ./proxy/trojan ./transport/internet/udp
+          echo B05_CORE_TROJAN_EXACT_QA_GATE_AND_FINAL_WRITER_UNIT_TESTS=PASS
+          timeout --signal=TERM --kill-after=12s 600s go test -p=3 -count=1 -timeout=550s -run '^TestB05' ./proxy/vmess/inbound ./common/buf
+          echo B05_CORE_VMESS_FIRST_POST_WRITER_PATH_GO_COMPILATION_AND_BUF_CALLBACK_TESTS=PASS
+          test "$(git hash-object proxy/vmess/inbound/inbound.go)" = 2636eac705bcfef92eccc9c71ffddebdbe0deae2
+          test "$(git hash-object proxy/trojan/server.go)" = e9d7df373212b63ad6b9f7e8964cb7f6760ea321
+          test "$(git status --porcelain)" = ""
+          echo B05_CORE_GITHUB_HOSTED_PROXY_RUNS=ZERO
+          echo B05_CORE_PRODUCTION_MAIN_CHANGES=ZERO
