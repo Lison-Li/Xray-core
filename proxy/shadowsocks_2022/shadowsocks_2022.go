@@ -2,6 +2,7 @@ package shadowsocks_2022
 
 import (
 	"context"
+	"io"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -23,6 +24,16 @@ func (s *ServerUDPSession) UpdateConn(conn stat.Connection) {
 }
 
 func (s *ServerUDPSession) WriteToClient(b []byte) error {
+	// A completed RemoveUser must imply no old account datagram is still
+	// inside the physical encrypted socket Write. The exclusive revoke lock
+	// waits for this shared lock, then future calls observe revoked=true.
+	s.writeGate.RLock()
+	defer s.writeGate.RUnlock()
+	// The caller may still be in the response goroutine after the account was
+	// removed. A closed/invalidated session must not emit any encrypted reply.
+	if s.revoked.Load() {
+		return ErrInvalidRequest
+	}
 	connVal := s.currentConn.Load()
 	if connVal == nil {
 		return errors.New("client connection closed")
@@ -31,8 +42,18 @@ func (s *ServerUDPSession) WriteToClient(b []byte) error {
 	if !ok || conn == nil {
 		return errors.New("client connection closed")
 	}
-	_, err := conn.Write(b)
-	return err
+	// This is the ORIGINAL encrypted UDP socket, not a dispatcher pipe.
+	// net.Conn.Write may legally report n < len(b) with err == nil.
+	// Treat that as a failed datagram, never a successful final Writer
+	// acknowledgment or an opportunity to charge the full payload.
+	n, err := conn.Write(b)
+	if err != nil {
+		return err
+	}
+	if n != len(b) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (s *ServerUDPSession) Close() {
@@ -56,6 +77,11 @@ func (s *ServerUDPSession) EnsureLink(
 	s.Lock()
 	defer s.Unlock()
 
+	// Removal may have invalidated this session between authenticated UDP
+	// packet decoding and new link creation. Never dispatch a revoked user.
+	if s.revoked.Load() {
+		return nil, ErrInvalidRequest
+	}
 	if link := s.link.Load(); link != nil {
 		s.UpdateConn(conn)
 		return link, nil
@@ -115,33 +141,17 @@ func handleUDPResponse(s *ServerUDPSession, link *transport.Link, fallbackDest n
 	for {
 		resMb, err := link.Reader.ReadMultiBuffer()
 		if err != nil {
+			// A strict WAL reader may have fsynced an intent before its
+			// underlying transport returned a simultaneous read error.
+			if receipt, ok := link.Reader.(liB05NativePacketReceiptReader); ok {
+				receipt.LiOnWriteFailed(err)
+			}
+			buf.ReleaseMulti(resMb)
 			return
 		}
 		s.timer.Update()
-		for i, rb := range resMb {
-			b := rb.Bytes()
-			if encode != nil {
-				replyDest := fallbackDest
-				if rb.UDP != nil {
-					replyDest = *rb.UDP
-				}
-				encPacket, err := encode(replyDest, b)
-				rb.Release()
-				if err != nil {
-					continue
-				}
-				if err := s.WriteToClient(encPacket); err != nil {
-					buf.ReleaseMulti(resMb[i+1:])
-					return
-				}
-			} else {
-				err := s.WriteToClient(b)
-				rb.Release()
-				if err != nil {
-					buf.ReleaseMulti(resMb[i+1:])
-					return
-				}
-			}
+		if err := liB05WriteNativeUDPBatchWithReceipt(s, resMb, fallbackDest, encode, link.Reader); err != nil {
+			return
 		}
 	}
 }

@@ -96,8 +96,17 @@ func (w *StreamWriter) WriteChunk(payload []byte) error {
 	w.buf = w.cipher.Seal(w.buf, w.nonce[:], payload, nil)
 	IncreaseNonce(w.nonce[:])
 
-	_, err := w.writer.Write(w.buf)
-	return err
+	// The ciphertext is one framed AEAD chunk. A short physical socket
+	// write, even with nil error, does not commit the whole plaintext chunk.
+	// Never allow a strict final Writer to count it as accepted.
+	n, err := w.writer.Write(w.buf)
+	if err != nil {
+		return err
+	}
+	if n != len(w.buf) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (w *StreamWriter) Write(p []byte) (int, error) {
@@ -388,8 +397,15 @@ func WriteTCPRequest(w io.Writer, method *CipherMethod, pskList [][]byte, dest n
 	IncreaseNonce(writer.nonce[:])
 	handshakeBuf.Write(varChunk)
 
-	if _, err := w.Write(handshakeBuf.Bytes()); err != nil {
+	// Request salt/EIH/header/early data are a single encrypted wire frame.
+	// A partial low-level Write is a failed handshake, never a success.
+	encodedRequest := handshakeBuf.Bytes()
+	n, err := w.Write(encodedRequest)
+	if err != nil {
 		return nil, err
+	}
+	if n != len(encodedRequest) {
+		return nil, io.ErrShortWrite
 	}
 
 	return writer, nil
@@ -469,6 +485,9 @@ type ServerStreamWriter struct {
 	psk          []byte
 	clientSalt   []byte
 	streamWriter *StreamWriter
+	// This original authenticated socket binding is assigned exclusively by
+	// MultiUserInbound before dispatch, never by an untrusted client.
+	liB05NativeTCPBinding *liB05TCPBinding
 }
 
 func NewServerStreamWriter(w io.Writer, method *CipherMethod, psk []byte, clientSalt []byte) *ServerStreamWriter {
@@ -517,8 +536,15 @@ func (s *ServerStreamWriter) sendHeaderWithFirstPayload(payload []byte) (*Stream
 		outBuf.Write(payloadChunk)
 	}
 
-	if _, err := s.w.Write(outBuf.Bytes()); err != nil {
+	// The response header includes the first plaintext payload when
+	// present. A short original socket Write must not acknowledge either.
+	encodedResponse := outBuf.Bytes()
+	n, err := s.w.Write(encodedResponse)
+	if err != nil {
 		return nil, err
+	}
+	if n != len(encodedResponse) {
+		return nil, io.ErrShortWrite
 	}
 	return sw, nil
 }
@@ -642,6 +668,21 @@ func TransportTCP(ctx context.Context, sessionPolicy policy.Session, reader buf.
 		defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
 		if c, ok := writer.(io.Closer); ok {
 			defer c.Close()
+		}
+		// When the XrayR ledger reader fsyncs a pre-write reservation,
+		// the receipt MUST come from the actual native encrypted client
+		// socket writer, not from the routing pipe or generic buf.Copy.
+		// Non-metered sessions retain the original copy path.
+		if metered, ok := link.Reader.(liB05NativeClientReceiptReader); ok {
+			// Only an authenticated MULTI-user session binds this physical
+			// writer to the exact live account and its revoke/receipt gate.
+			// Single-user SS2022 and relay must never borrow the multi-user
+			// proof based solely on a crafted strict Reader marker.
+			physical, ok := liB05BoundNativeOriginalTCPWriter(writer)
+			if !ok {
+				return errors.New("B05 strict native TCP denied: missing authenticated original physical writer / revoke fence")
+			}
+			return liB05CopyNativeTCPOriginalWithReceipt(metered, physical, func() { timer.Update() })
 		}
 		return buf.Copy(link.Reader, writer, buf.UpdateActivity(timer))
 	}

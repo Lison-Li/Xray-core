@@ -2,6 +2,8 @@ package shadowsocks
 
 import (
 	"context"
+    "io"
+	"os"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -90,6 +92,12 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
+	// Strict-WAL QA cannot take the splice shortcut around the actual
+	// post-encrypted-client Writer and the durable response receipt.
+	if os.Getenv("XRAYR_LI_B05_STRICT") == "1" &&
+		os.Getenv("XRAYR_LI_B05_LEGACY_SS_TCP_QA") == "1" {
+		inbound.CanSpliceCopy = 0
+	}
 
 	switch network {
 	case net.Network_TCP:
@@ -101,8 +109,48 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	}
 }
 
+// LiB05NativeSSUDPEncryptedSocketReceiptHookReady is a compile-time
+// source-proven QA capability, NOT an admission or release-enable flag.
+// XrayR must independently require its exact nonproduction authenticated
+// classic SS scope and explicit strict Writer flags before enabling UDP.
+func LiB05NativeSSUDPEncryptedSocketReceiptHookReady() bool { return true }
+
+// Write the complete ORIGINAL encrypted datagram. Framing and salt bytes
+// are excluded from the billing reservation; a short write is UNKNOWN.
+func liB05SSNativeFinalEncryptedSocketWrite(writer io.Writer, encrypted []byte) error {
+    n,err:=writer.Write(encrypted)
+    if err!=nil{return err}
+    if n!=len(encrypted){return io.ErrShortWrite}
+    return nil
+}
+
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+    // No QA flags -> existing void callback/packet behavior unchanged.
+    strictNativeUDP:=os.Getenv("XRAYR_LI_B05_STRICT")=="1" &&
+        os.Getenv("XRAYR_LI_B05_NATIVE_SS_UDP_QA")=="1" &&
+        os.Getenv("XRAYR_LI_B05_NATIVE_SS_UDP_FINAL_WRITER_ACK")=="1"
+    var udpServer *udp.Dispatcher
+    if strictNativeUDP {
+        udpServer=udp.NewDispatcherWithFinalWriterReceipt(dispatcher,
+            func(ctx context.Context, packet *udp_proto.Packet) error {
+                request:=protocol.RequestHeaderFromContext(ctx)
+                payload:=packet.Payload
+                if request==nil || request.User==nil {
+                    payload.Release()
+                    return errors.New("B05 original classic SS UDP denied: no authenticated user")
+                }
+                if payload.UDP!=nil {
+                    request=&protocol.RequestHeader{User:request.User,
+                        Address:payload.UDP.Address,Port:payload.UDP.Port}
+                }
+                data,err:=EncodeUDPPacket(request,payload.Bytes())
+                payload.Release()
+                if err!=nil{return errors.New("failed to encode original classic SS UDP response").Base(err)}
+                defer data.Release()
+                return liB05SSNativeFinalEncryptedSocketWrite(conn,data.Bytes())
+            })
+    } else {
+        udpServer = udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		payload := packet.Payload
 		if request == nil {
@@ -128,6 +176,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 		conn.Write(data.Bytes())
 		data.Release()
 	})
+    }
 	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)
@@ -251,17 +300,10 @@ func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dis
 			return errors.New("failed to write response").Base(err)
 		}
 
-		{
-			payload, err := link.Reader.ReadMultiBuffer()
-			if err != nil {
-				return err
-			}
-			if err := responseWriter.WriteMultiBuffer(payload); err != nil {
-				return err
-			}
-		}
-
-		if err := bufferedWriter.SetBuffered(false); err != nil {
+		// The first classic SS response is buffered. A durable Writer ACK
+		// is forbidden until the original encrypted client's buffer is
+		// physically flushed; subsequent chunks use the pinned buf.Copy hook.
+		if err := liB05QALegacySSFirstFlush(link.Reader, responseWriter, bufferedWriter); err != nil {
 			return err
 		}
 
@@ -297,3 +339,42 @@ func init() {
 		return NewServer(ctx, config.(*ServerConfig))
 	}))
 }
+
+// liB05QALegacySSFirstFlush exists ONLY in this temporary QA module.
+// A successful buffered/middle-layer Write is not a network receipt; first
+// flush must finish before a final-Writer WAL confirmation is permitted.
+// Any short/error/panic is an ambiguous delivery, so notify the shared ledger.
+func liB05QALegacySSFirstFlush(reader buf.Reader, writer buf.Writer, buffered interface{SetBuffered(bool) error}) (err error) {
+    payload, err := reader.ReadMultiBuffer()
+    if err != nil { return err }
+    n := payload.Len()
+    defer func() {
+        if recovered := recover(); recovered != nil {
+            if receipt, ok := reader.(interface{LiOnWriteFailed(error)}); ok {
+                receipt.LiOnWriteFailed(errors.New("B05 legacy SS first TCP Writer panic; delivery ambiguous"))
+            }
+            panic(recovered)
+        }
+    }()
+    if err = writer.WriteMultiBuffer(payload); err != nil {
+        if receipt, ok := reader.(interface{LiOnWriteFailed(error)}); ok {
+            receipt.LiOnWriteFailed(err)
+        }
+        return err
+    }
+    if err = buffered.SetBuffered(false); err != nil {
+        if receipt, ok := reader.(interface{LiOnWriteFailed(error)}); ok {
+            receipt.LiOnWriteFailed(err)
+        }
+        return err
+    }
+    if receipt, ok := reader.(interface{LiOnWriteAccepted(int32) error}); ok {
+        return receipt.LiOnWriteAccepted(n)
+    }
+    return nil
+}
+
+// This exact symbol exists only in the SHA-pinned legacy SS overlay.
+// A separately build-tagged XrayR QA adapter REQUIRES this symbol at compile
+// time, so a generic b05writerqa Copy patch cannot admit legacy strict SS.
+func LiB05LegacySSFirstFlushHookReady() bool { return true }

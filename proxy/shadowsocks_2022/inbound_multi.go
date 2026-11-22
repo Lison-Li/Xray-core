@@ -33,7 +33,9 @@ func init() {
 }
 
 type MultiUserInbound struct {
-	sync.Mutex
+	// Removal needs exclusive access while UDP authenticates/assigns
+	// session users. Multiple active UDP decryptions may share read lock.
+	sync.RWMutex
 	networks        []net.Network
 	method          *CipherMethod
 	masterPSK       []byte
@@ -42,6 +44,9 @@ type MultiUserInbound struct {
 	userCount       atomic.Int64
 	saltFilter      *antireplay.ReplayFilter[[32]byte]
 	udpSessions     *UDPSessionManager
+	// Protected by the same inbound RWMutex as live user authentication.
+	// A successful user removal closes all accepted original TCP sockets.
+	tcpConnections map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{}
 	udpMasterCipher cipher.Block
 	policyManager   policy.Manager
 }
@@ -82,6 +87,7 @@ func NewMultiServer(ctx context.Context, config *MultiUserServerConfig) (*MultiU
 		usersByEmail:    utils.NewTypedSyncMap[string, *protocol.MemoryUser](),
 		saltFilter:      antireplay.NewMapFilter[[32]byte](60),
 		udpSessions:     NewUDPSessionManager(500 * time.Second),
+		tcpConnections:  make(map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{}),
 		udpMasterCipher: masterBlock,
 		policyManager:   v.GetFeature(policy.ManagerType()).(policy.Manager),
 	}
@@ -126,6 +132,12 @@ func (i *MultiUserInbound) AddUser(ctx context.Context, u *protocol.MemoryUser) 
 	}
 
 	pskHash := DeriveUserPSKHash(memAcc.Key)
+	// Distinct accounts MUST NOT share a PSK/EIH identity: otherwise the
+	// second add silently replaces the first user's hash mapping and traffic
+	// can be attributed to the wrong UID before either account is deleted.
+	if _, exists := i.usersByHash.Load(pskHash); exists {
+		return errors.New("duplicate shadowsocks 2022 user PSK identity refused")
+	}
 	i.usersByHash.Store(pskHash, u)
 	if emailKey != "" {
 		i.usersByEmail.Store(emailKey, u)
@@ -152,6 +164,29 @@ func (i *MultiUserInbound) RemoveUser(ctx context.Context, email string) error {
 
 	pskHash := DeriveUserPSKHash(u.Account.(*MemoryAccount).Key)
 	i.usersByHash.Delete(pskHash)
+	// The deletion lock excludes all new native TCP authentication. Close
+	// accepted original sockets while still holding this fence. This also
+	// interrupts a handshake authenticated immediately before deletion.
+	for binding := range i.tcpConnections[u] {
+		// Set the fence before closing sockets: no later strict original
+		// downlink can acquire a fresh Writer receipt after this point.
+		binding.liB05Revoked.Store(true)
+		_ = binding.conn.Close()
+	}
+	for binding := range i.tcpConnections[u] {
+		// A full socket.Write may have returned while its durable Confirm
+		// is still blocked. Do not report deletion complete until the
+		// physical-write-to-WAL-confirm critical section is drained.
+		binding.liB05ReceiptGate.Lock()
+		binding.liB05ReceiptGate.Unlock()
+	}
+	delete(i.tcpConnections, u)
+	// Invalidate sessions that previously resolved this exact account. Merely
+	// removing the hash does NOT invalidate sessionItem.User/UserPSK caches.
+	// The handler's exclusive lock excludes new cached-user assignment.
+	if i.udpSessions != nil {
+		i.udpSessions.RevokeUser(u)
+	}
 	i.userCount.Add(-1)
 
 	return nil
@@ -196,6 +231,53 @@ func (i *MultiUserInbound) Process(ctx context.Context, network net.Network, con
 	return i.processUDP(ctx, connection, dispatcher)
 }
 
+// liB05TCPBinding is a unique, comparable handle for the original TCP socket.
+// A re-added account must never inherit bindings owned by the retired pointer.
+type liB05TCPBinding struct {
+	user *protocol.MemoryUser
+	conn net.Conn
+	// When a strict native downlink is being transmitted, this gate holds
+	// through the fsynced WAL Confirm/Quarantine, not just socket.Write.
+	liB05ReceiptGate sync.RWMutex
+	liB05Revoked atomic.Bool
+}
+
+// liB05BindTCPUser atomically checks live EIH identity and registers the
+// actual transport socket. RemoveUser holds the same exclusive lock, so
+// either the old binding is closed by removal or new binding is refused.
+func (i *MultiUserInbound) liB05BindTCPUser(hash [AESBlockSize]byte, conn net.Conn) (*liB05TCPBinding, bool) {
+	i.Lock()
+	defer i.Unlock()
+	user, ok := i.usersByHash.Load(hash)
+	if !ok || user == nil || conn == nil {
+		return nil, false
+	}
+	if i.tcpConnections == nil {
+		i.tcpConnections = make(map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{})
+	}
+	binding := &liB05TCPBinding{user: user, conn: conn}
+	if i.tcpConnections[user] == nil {
+		i.tcpConnections[user] = make(map[*liB05TCPBinding]struct{})
+	}
+	i.tcpConnections[user][binding] = struct{}{}
+	return binding, true
+}
+
+// Keep the original socket registered until it is actually closed.
+func (i *MultiUserInbound) liB05UnbindTCPUser(binding *liB05TCPBinding) {
+	if binding == nil {
+		return
+	}
+	i.Lock()
+	defer i.Unlock()
+	if active := i.tcpConnections[binding.user]; active != nil {
+		delete(active, binding)
+		if len(active) == 0 {
+			delete(i.tcpConnections, binding.user)
+		}
+	}
+}
+
 func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispatcher routing.Dispatcher) error {
 	defer conn.Close()
 
@@ -225,12 +307,21 @@ func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispat
 		return err
 	}
 
-	// Lookup user
-	user, ok := i.usersByHash.Load(decryptedHash)
+	// Authenticate and register the original TCP transport under the same
+	// user-removal fence. A plain usersByHash.Load could authorize a removed
+	// account immediately before deletion and leave its stream alive.
+	binding, ok := i.liB05BindTCPUser(decryptedHash, conn)
 	if !ok {
 		ResetTCPConn(conn)
 		return ErrInvalidRequest
 	}
+	defer func() {
+		// Close before untracking: RemoveUser must never observe a
+		// deregistered, still-writable old account socket.
+		_ = conn.Close()
+		i.liB05UnbindTCPUser(binding)
+	}()
+	user := binding.user
 	userPSK := user.Account.(*MemoryAccount).Key
 
 	reader, reqHeader, err := InitServerStream(conn, i.method, userPSK, saltSlice, salt, fixedChunk, i.saltFilter)
@@ -242,6 +333,7 @@ func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispat
 	dest := reqHeader.Destination
 
 	writer := NewServerStreamWriter(conn, i.method, userPSK, saltSlice)
+	writer.liB05NativeTCPBinding = binding
 
 	// Dispatch Connection to Xray routing with matched User
 	inbound := session.InboundFromContext(ctx)
@@ -303,39 +395,48 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 				continue
 			}
 
-			var userPSK []byte
-			var currentUser *protocol.MemoryUser
+			// Every native UDP packet must resolve its authenticated EIH against
+			// the LIVE user map, including packets of an already cached SessionID.
+			// A removed user cannot rely on sessionItem.UserPSK to bypass revoke.
+			decryptedHash := DecryptUDPEIH(i.udpMasterCipher, rawHeader[:], packetBytes[16:32])
+			i.RLock()
 			sessionItem.Lock()
-			currentUser = sessionItem.User
-			userPSK = sessionItem.UserPSK
+			cached := sessionItem.User
+			revoked := sessionItem.revoked.Load()
 			sessionItem.Unlock()
-
-			if currentUser == nil {
-				// Decrypt EIH
-				decryptedHash := DecryptUDPEIH(i.udpMasterCipher, rawHeader[:], packetBytes[16:32])
-
-				user, ok := i.usersByHash.Load(decryptedHash)
-				if !ok {
-					b.Release()
-					continue
-				}
-				currentUser = user
-				userPSK = user.Account.(*MemoryAccount).Key
+			currentUser, userPSK, active := i.liB05LiveUDPUser(decryptedHash, cached)
+			if revoked || !active {
+				i.RUnlock()
+				b.Release()
+				continue
 			}
 
 			decoded, err := sessionItem.DecryptAESPayload(i.method, userPSK, sessionID, packetID, rawHeader[:], packetBytes[32:])
 			b.Release()
 			if err != nil {
+				i.RUnlock()
 				continue
 			}
 
 			sessionItem.Lock()
+			if sessionItem.revoked.Load() || (sessionItem.User != nil && sessionItem.User != currentUser) {
+				sessionItem.Unlock()
+				i.RUnlock()
+				continue
+			}
 			if sessionItem.User == nil {
 				sessionItem.User = currentUser
 				sessionItem.UserPSK = userPSK
 			}
 			sessionItem.Unlock()
+			i.RUnlock()
 
+			// Exclusive RemoveUser may have invalidated the session immediately
+			// after the read lock. The downstream final socket and EnsureLink
+			// independently reject the revoked bit as well.
+			if sessionItem.revoked.Load() {
+				continue
+			}
 			link := sessionItem.link.Load()
 			if link != nil {
 				sessionItem.UpdateConn(conn)
@@ -349,6 +450,9 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 				}
 			}
 
+			if sessionItem.revoked.Load() {
+				continue
+			}
 			pBuf := buf.New()
 			pBuf.Write(decoded.Payload)
 			pBuf.UDP = &decoded.Destination
@@ -359,4 +463,21 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 
 func (i *MultiUserInbound) encodeServerUDPPacket(clientSessionID uint64, userPSK []byte, dest net.Destination, payload []byte) ([]byte, error) {
 	return i.udpSessions.EncodeServerPacket(i.method, userPSK, clientSessionID, dest, payload)
+}
+
+// liB05LiveUDPUser is called under MultiUserInbound.RLock, held across
+// authenticated packet decryption and cached session ownership assignment.
+// The cached pointer may ONLY equal a user still present under the exact
+// EIH-derived hash. In particular RemoveUser + re-add with the same key
+// cannot revive an old session pointer/nonce/link.
+func (i *MultiUserInbound) liB05LiveUDPUser(hash [AESBlockSize]byte, cached *protocol.MemoryUser) (*protocol.MemoryUser, []byte, bool) {
+	user, ok := i.usersByHash.Load(hash)
+	if !ok || user == nil || (cached != nil && cached != user) {
+		return nil, nil, false
+	}
+	account, ok := user.Account.(*MemoryAccount)
+	if !ok || len(account.Key) != i.method.KeySaltLength {
+		return nil, nil, false
+	}
+	return user, account.Key, true
 }
