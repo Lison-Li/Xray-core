@@ -1,0 +1,77 @@
+name: P07 main-based native-core original Writer source regression once (no binary)
+on:
+  push:
+    branches:
+      - integration/p07-native-core-6737-on-latest-main-20261122
+    paths:
+      - .github/workflows/qa-p07-core-mainbase-real-regression-once-20261122.yml
+permissions:
+  contents: read
+concurrency:
+  group: qa-p07-core-6737-mainbased-regression-once-20261122
+  cancel-in-progress: false
+jobs:
+  github_hosted_core_source_only:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/integration/p07-native-core-6737-on-latest-main-20261122' &&
+      github.event.head_commit.message == '[qa-p07-core-mainbase-go127-regression-once-20261122]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: -mod=readonly
+      GOPROXY: https://proxy.golang.org
+      GOSUMDB: sum.golang.org
+      CGO_ENABLED: '1'
+      GOOS: linux
+      GOARCH: amd64
+      GOMAXPROCS: '4'
+      GOMEMLIMIT: 4500MiB
+    steps:
+      - name: Checkout tested-source main-based commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Go 1.27.3
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Verify exact inherited modern native core source and no unauthorized changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_REPOSITORY" = Lison-Li/Xray-core
+          test "$(go version)" = 'go version go1.27.3 linux/amd64'
+          test "$(git rev-parse HEAD^)" = '76de52fd3a36d4274f46206eabf2f5b3cc8da70f'
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/li_b05_native_original_tcp_udp_receipt.go)" = 'ddcd7529dc85df19c9ab9646afc0bb2457f729fe'
+          test "$(git rev-parse HEAD:proxy/shadowsocks_2022/inbound_multi.go)" = 'e6ab812615128cb17d9d802d42547db9d32145f2'
+          test "$(git rev-parse HEAD:common/buf/copy.go)" = '83a3628d164560213ca1faa27cb7981d6228f4e9'
+          test "$(git rev-parse HEAD:transport/internet/udp/dispatcher.go)" = 'eaac2172f80e8f64e38975148158fe98814bdc38'
+          test "$(git diff --name-only HEAD^ HEAD)" = '.github/workflows/qa-p07-core-mainbase-real-regression-once-20261122.yml'
+          echo P07_CORE_LATEST_MAIN_EXACT_4_ORIGINAL_WRITER_BLOBS=PASS
+      - name: Genuine updated original Go package tests (not mocked network acceptance)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=15s 690s go test -p=3 -count=1 -timeout=650s ./common/buf ./proxy/shadowsocks ./proxy/shadowsocks_2022 ./proxy/trojan ./proxy/vmess/inbound ./transport/internet/udp
+          echo P07_CORE_MAINBASE_GO127_ALL_AFFECTED_PACKAGES=PASS
+      - name: Concurrency and revoke race detector on native original socket owners
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=15s 500s go test -race -p=2 -count=1 -timeout=450s ./proxy/shadowsocks_2022 ./transport/internet/udp
+          echo P07_CORE_MAINBASE_NATIVE_WRITER_REVOKE_RACE=PASS
+      - name: Go vet affected source packages
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout --signal=TERM --kill-after=15s 260s go vet -p=3 ./common/buf ./proxy/shadowsocks ./proxy/shadowsocks_2022 ./proxy/trojan ./proxy/vmess/inbound ./transport/internet/udp
+          echo P07_CORE_MAINBASE_GO_VET=PASS
+          echo P07_NO_PROXY_INSTALL_OR_RUN=YES
+          echo P07_NO_BINARY_OR_ARTIFACT=YES
+          echo P07_NO_PRODUCTION_MUTATION=YES
