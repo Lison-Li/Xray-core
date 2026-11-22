@@ -77,7 +77,6 @@ jobs:
 
   build:
     needs: check-assets
-    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'integration/p07-')) }}
     permissions:
       contents: write
     strategy:
