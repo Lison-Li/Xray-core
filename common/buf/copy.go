@@ -155,7 +155,6 @@ func CopyOnceTimeout(reader Reader, writer Writer, timeout time.Duration) error 
 	return nil
 }
 
-
 // liB05SafeFinalWriterCall preserves unknown partial deliveries. Never
 // refund or forge a receipt when a delegate panics after taking ownership.
 func liB05SafeFinalWriterCall(reader Reader, writer Writer, mb MultiBuffer) (err error) {

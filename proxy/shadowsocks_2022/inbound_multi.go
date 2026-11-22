@@ -36,17 +36,17 @@ type MultiUserInbound struct {
 	// Removal needs exclusive access while UDP authenticates/assigns
 	// session users. Multiple active UDP decryptions may share read lock.
 	sync.RWMutex
-	networks        []net.Network
-	method          *CipherMethod
-	masterPSK       []byte
-	usersByHash     *utils.TypedSyncMap[[AESBlockSize]byte, *protocol.MemoryUser]
-	usersByEmail    *utils.TypedSyncMap[string, *protocol.MemoryUser]
-	userCount       atomic.Int64
-	saltFilter      *antireplay.ReplayFilter[[32]byte]
-	udpSessions     *UDPSessionManager
+	networks     []net.Network
+	method       *CipherMethod
+	masterPSK    []byte
+	usersByHash  *utils.TypedSyncMap[[AESBlockSize]byte, *protocol.MemoryUser]
+	usersByEmail *utils.TypedSyncMap[string, *protocol.MemoryUser]
+	userCount    atomic.Int64
+	saltFilter   *antireplay.ReplayFilter[[32]byte]
+	udpSessions  *UDPSessionManager
 	// Protected by the same inbound RWMutex as live user authentication.
 	// A successful user removal closes all accepted original TCP sockets.
-	tcpConnections map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{}
+	tcpConnections  map[*protocol.MemoryUser]map[*liB05TCPBinding]struct{}
 	udpMasterCipher cipher.Block
 	policyManager   policy.Manager
 }
@@ -239,7 +239,7 @@ type liB05TCPBinding struct {
 	// When a strict native downlink is being transmitted, this gate holds
 	// through the fsynced WAL Confirm/Quarantine, not just socket.Write.
 	liB05ReceiptGate sync.RWMutex
-	liB05Revoked atomic.Bool
+	liB05Revoked     atomic.Bool
 }
 
 // liB05BindTCPUser atomically checks live EIH identity and registers the
