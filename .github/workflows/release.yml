@@ -5,6 +5,8 @@ on:
   release:
     types: [published]
   push:
+    branches-ignore:
+      - 'integration/p07-*'
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -75,6 +77,7 @@ jobs:
 
   build:
     needs: check-assets
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'integration/p07-')) }}
     permissions:
       contents: write
     strategy:
