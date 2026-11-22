@@ -88,11 +88,11 @@ type ServerUDPSession struct {
 	// Independent of per-datagram writeGate: protects the WAL receipt for
 	// an entire multi-datagram plaintext reservation until Confirm completes.
 	liB05ReceiptGate sync.RWMutex
-	SessionID  uint64
-	Window     *SlidingWindow
-	User       *protocol.MemoryUser
-	UserPSK    []byte
-	LastActive atomic.Int64 // Unix timestamp in seconds
+	SessionID        uint64
+	Window           *SlidingWindow
+	User             *protocol.MemoryUser
+	UserPSK          []byte
+	LastActive       atomic.Int64 // Unix timestamp in seconds
 
 	clientBodyCipher cipher.AEAD
 

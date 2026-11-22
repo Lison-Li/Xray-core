@@ -48,12 +48,12 @@ func (c *connEntry) terminate() {
 
 type Dispatcher struct {
 	sync.RWMutex
-	conn       *connEntry
-	dispatcher routing.Dispatcher
-	callback   ResponseCallback
+	conn                *connEntry
+	dispatcher          routing.Dispatcher
+	callback            ResponseCallback
 	finalWriterCallback FinalWriterResponseCallback
-	callClose  func() error
-	closed     bool
+	callClose           func() error
+	closed              bool
 }
 
 func NewDispatcher(dispatcher routing.Dispatcher, callback ResponseCallback) *Dispatcher {
@@ -66,7 +66,7 @@ func NewDispatcher(dispatcher routing.Dispatcher, callback ResponseCallback) *Di
 // NewDispatcherWithFinalWriterReceipt requires a strictly authenticated
 // original billing Reader at runtime. Legacy NewDispatcher remains unchanged.
 func NewDispatcherWithFinalWriterReceipt(dispatcher routing.Dispatcher, callback FinalWriterResponseCallback) *Dispatcher {
-    return &Dispatcher{dispatcher:dispatcher,finalWriterCallback:callback}
+	return &Dispatcher{dispatcher: dispatcher, finalWriterCallback: callback}
 }
 
 func (v *Dispatcher) RemoveRay() {
@@ -161,45 +161,51 @@ func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, cal
 			return
 		}
 		timer.Update()
-        if finalWriterCallback == nil {
-            for _, b := range mb {
-                if b.UDP != nil {dest = *b.UDP}
-                callback(ctx, &udp.Packet{Payload:b,Source:dest})
-            }
-            continue
-        }
-        // Strict native UDP cannot reach any original socket unless the
-        // real routed Reader can provide both post-Writer WAL callbacks.
-        receipt, ok := input.(interface{
-            LiOnWriteAccepted(int32) error
-            LiOnWriteFailed(error)
-        })
-        if !ok {
-            buf.ReleaseMulti(mb)
-            errors.LogWarning(ctx,"B05 original native UDP socket Writer: no authenticated metered Reader")
-            return
-        }
-        acceptedBytes:=mb.Len()
-        if acceptedBytes<=0 {
-            buf.ReleaseMulti(mb)
-            receipt.LiOnWriteFailed(io.ErrNoProgress)
-            return
-        }
-        for i,b:=range mb {
-            if b.UDP!=nil {dest=*b.UDP}
-            if err:=finalWriterCallback(ctx,&udp.Packet{Payload:b,Source:dest});err!=nil{
-                receipt.LiOnWriteFailed(err)
-                for _,remaining:=range mb[i+1:] {remaining.Release()}
-                errors.LogWarningInner(ctx,err,"B05 original native UDP encrypted packet socket write failed")
-                return
-            }
-        }
-        // Confirm only AFTER every original encrypted socket Write returned.
-        if err:=receipt.LiOnWriteAccepted(acceptedBytes);err!=nil{
-            receipt.LiOnWriteFailed(err)
-            errors.LogWarningInner(ctx,err,"B05 native UDP durable receipt failed")
-            return
-        }
+		if finalWriterCallback == nil {
+			for _, b := range mb {
+				if b.UDP != nil {
+					dest = *b.UDP
+				}
+				callback(ctx, &udp.Packet{Payload: b, Source: dest})
+			}
+			continue
+		}
+		// Strict native UDP cannot reach any original socket unless the
+		// real routed Reader can provide both post-Writer WAL callbacks.
+		receipt, ok := input.(interface {
+			LiOnWriteAccepted(int32) error
+			LiOnWriteFailed(error)
+		})
+		if !ok {
+			buf.ReleaseMulti(mb)
+			errors.LogWarning(ctx, "B05 original native UDP socket Writer: no authenticated metered Reader")
+			return
+		}
+		acceptedBytes := mb.Len()
+		if acceptedBytes <= 0 {
+			buf.ReleaseMulti(mb)
+			receipt.LiOnWriteFailed(io.ErrNoProgress)
+			return
+		}
+		for i, b := range mb {
+			if b.UDP != nil {
+				dest = *b.UDP
+			}
+			if err := finalWriterCallback(ctx, &udp.Packet{Payload: b, Source: dest}); err != nil {
+				receipt.LiOnWriteFailed(err)
+				for _, remaining := range mb[i+1:] {
+					remaining.Release()
+				}
+				errors.LogWarningInner(ctx, err, "B05 original native UDP encrypted packet socket write failed")
+				return
+			}
+		}
+		// Confirm only AFTER every original encrypted socket Write returned.
+		if err := receipt.LiOnWriteAccepted(acceptedBytes); err != nil {
+			receipt.LiOnWriteFailed(err)
+			errors.LogWarningInner(ctx, err, "B05 native UDP durable receipt failed")
+			return
+		}
 	}
 }
 

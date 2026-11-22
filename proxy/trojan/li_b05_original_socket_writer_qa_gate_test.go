@@ -25,11 +25,15 @@ func TestB05TrojanOriginalSocketWriterGateDefaultDenialAndExactLoopback(t *testi
 	for _, flag := range flags {
 		t.Setenv(flag, "0")
 	}
-	if liB05TrojanOriginalSocketWriterQA(in) { t.Fatal("strict QA enabled without flags") }
+	if liB05TrojanOriginalSocketWriterQA(in) {
+		t.Fatal("strict QA enabled without flags")
+	}
 	for _, flag := range flags {
 		t.Setenv(flag, "1")
 	}
-	if !liB05TrojanOriginalSocketWriterQA(in) { t.Fatal("all explicitly linked QA gates denied") }
+	if !liB05TrojanOriginalSocketWriterQA(in) {
+		t.Fatal("all explicitly linked QA gates denied")
+	}
 	for _, flag := range flags {
 		t.Setenv(flag, "0")
 		if liB05TrojanOriginalSocketWriterQA(in) {

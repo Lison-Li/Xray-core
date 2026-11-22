@@ -202,15 +202,15 @@ func transferResponse(timer signal.ActivityUpdater, session *encoding.ServerSess
 	// Non-metered VMess retains the exact upstream first-packet path.
 	if _, b05FinalWriterReader := input.(interface{ LiOnWriteAccepted(int32) error }); !b05FinalWriterReader {
 		{
-		// Optimize for small response packet
-		data, err := input.ReadMultiBuffer()
-		if err != nil {
-			return err
-		}
+			// Optimize for small response packet
+			data, err := input.ReadMultiBuffer()
+			if err != nil {
+				return err
+			}
 
-		if err := bodyWriter.WriteMultiBuffer(data); err != nil {
-			return err
-		}
+			if err := bodyWriter.WriteMultiBuffer(data); err != nil {
+				return err
+			}
 		}
 	}
 
