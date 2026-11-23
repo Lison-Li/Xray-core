@@ -12,7 +12,7 @@ jobs:
     if: >-
       github.repository == 'Lison-Li/Xray-core' &&
       github.ref == 'refs/heads/integration/p07-native-core-6737-on-latest-main-20261122' &&
-      github.event.head_commit.message == '[qa-p07-windows-full-base-candidate-once-20261123]'
+      github.event.head_commit.message == '[qa-p07-windows-geodata-verified-base-candidate-once-20261123]'
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -46,6 +46,35 @@ jobs:
           if ((& go version).Trim() -ne 'go version go1.27.4 windows/amd64') { throw 'Go version/architecture mismatch' }
           $results = @{}
           $spec = @(@{label='candidate';sha='fab1029c3629551e80e64812793353b5fe0cc885'},@{label='base';sha='0091c4bc88cb23dc24e360dd0ce3b053f6eaa93d'})
+          # The generic upstream test workflow restores GeoData before go test.
+          # This isolated two-checkout QA must supply identical verified data to BOTH refs.
+          $ProgressPreference = 'SilentlyContinue'
+          $dataSpecs = @(
+            @{ name = 'geoip.dat'; path = 'geoip/geoip-lite.dat' },
+            @{ name = 'geosite.dat'; path = 'geosite/geosite.dat' }
+          )
+          foreach ($data in $dataSpecs) {
+            $url = 'https://raw.githubusercontent.com/XTLS/Xray-rules-dat/release/' + $data.path
+            $sumResponse = Invoke-WebRequest -Uri ($url + '.sha256sum') -UseBasicParsing -TimeoutSec 120
+            $hashMatch = [regex]::Match([string]$sumResponse.Content, '^(?i:[0-9a-f]{64})(?=\\s)')
+            if (-not $hashMatch.Success) { throw ('Missing trustworthy GeoData SHA-256 for ' + $data.name) }
+            $expected = $hashMatch.Value.ToLowerInvariant()
+            $download = Join-Path $env:RUNNER_TEMP ('p07-verified-' + $data.name)
+            Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $download -TimeoutSec 180
+            if ((Get-Item -LiteralPath $download).Length -le 0) { throw ('Empty ' + $data.name) }
+            $actual = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) { throw ('GeoData SHA-256 mismatch: ' + $data.name) }
+            foreach ($item in $spec) {
+              $resourceDir = Join-Path (Join-Path $env:GITHUB_WORKSPACE $item.label) 'resources'
+              New-Item -ItemType Directory -Path $resourceDir -Force | Out-Null
+              $destination = Join-Path $resourceDir $data.name
+              Copy-Item -LiteralPath $download -Destination $destination -Force
+              $copied = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($copied -ne $expected) { throw ('GeoData copy drift: ' + $item.label + '/' + $data.name) }
+              Write-Host ('P07_FULL_WIN_IDENTICAL_GEODATA_'+$item.label.ToUpper()+'_'+$data.name.ToUpper()+'='+$copied)
+            }
+          }
+          Write-Host 'P07_FULL_WIN_BASE_AND_CANDIDATE_GEODATA_SHA256_VERIFIED=PASS'
           foreach ($item in $spec) {
             $folder = Join-Path $env:GITHUB_WORKSPACE $item.label
             Push-Location $folder
