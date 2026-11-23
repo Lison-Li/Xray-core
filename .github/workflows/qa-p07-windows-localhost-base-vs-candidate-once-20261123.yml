@@ -1,0 +1,75 @@
+name: QA P07 Windows upstream mainbase versus candidate localhost scenario forensic once
+on:
+  push:
+    branches: [integration/p07-native-core-6737-on-latest-main-20261122]
+    paths: [.github/workflows/qa-p07-windows-localhost-base-vs-candidate-once-20261123.yml]
+permissions: {contents: read}
+concurrency:
+  group: p07-windows-base-versus-candidate-localhost-once-20261123
+  cancel-in-progress: false
+jobs:
+  compare_upstream_and_candidate_on_one_windows_host:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/integration/p07-native-core-6737-on-latest-main-20261122' &&
+      github.event.head_commit.message == '[qa-p07-windows-base-vs-candidate-exact-once-20261123]'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      CGO_ENABLED: '0'
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0091c4bc88cb23dc24e360dd0ce3b053f6eaa93d
+          path: base
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: fab1029c3629551e80e64812793353b5fe0cc885
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Original Windows 1.27.4 loopback failures baseline versus native Writer candidate on one identical host
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows') { throw 'Not a Windows runner' }
+          $gover = (& go version).Trim()
+          Write-Host ('P07_WIN_TARGET_GO=' + $gover)
+          if ($gover -notmatch 'go1[.]27[.]4 windows/amd64') { throw 'Go version or Windows arch drift' }
+          $refs = @(@{ name='base'; sha='0091c4bc88cb23dc24e360dd0ce3b053f6eaa93d' }, @{ name='candidate'; sha='fab1029c3629551e80e64812793353b5fe0cc885' })
+          $outcomes = @{}
+          foreach ($item in $refs) {
+            $folder = Join-Path $env:GITHUB_WORKSPACE $item.name
+            if (-not (Test-Path (Join-Path $folder 'testing/scenarios/feature_test.go'))) { throw ('Scenario files missing for '+$item.name) }
+            Push-Location $folder
+            try {
+              $sha = (& git rev-parse HEAD).Trim()
+              if ($sha -ne $item.sha) { throw ('Source SHA mismatch for '+$item.name) }
+              Write-Host ('P07_WIN_BASE_CANDIDATE_EXACT_SOURCE_'+$item.name.ToUpper()+'='+$sha)
+              $logFile = Join-Path $env:RUNNER_TEMP ('p07-win-'+$item.name+'.log')
+              & go test -timeout 15m -count=3 -run '^(TestDokodemoTCP|TestDialerProxy)$' -v ./testing/scenarios 2>&1 | Tee-Object -FilePath $logFile
+              $rc = $LASTEXITCODE
+              $outcomes[$item.name] = $rc
+              Write-Host ('P07_WIN_ORIGINAL_LOCALHOST_SCENARIOS_'+$item.name.ToUpper()+'_EXIT='+$rc)
+              if (Test-Path $logFile) {
+                $failed = @(Select-String -Path $logFile -Pattern '^--- FAIL:' | ForEach-Object { $_.Line.Trim() })
+                foreach ($line in $failed) { Write-Host ('P07_WIN_FAILED_TEST_'+$item.name.ToUpper()+'='+$line) }
+              }
+            } finally { Pop-Location }
+          }
+          if ($outcomes.Count -ne 2) { throw 'Incomplete base/candidate comparison' }
+          Write-Host ('P07_WIN_BASE_EXIT=' + $outcomes['base'])
+          Write-Host ('P07_WIN_CANDIDATE_EXIT=' + $outcomes['candidate'])
+          if ($outcomes['base'] -ne 0 -or $outcomes['candidate'] -ne 0) { throw 'One or both real Windows scenario test cohorts failed; inspect exact diagnostic markers' }
+          Write-Host 'P07_WIN_2_MODES_X3_EACH_BASE_AND_CANDIDATE_SAME_HOST=PASS'
+          Write-Host 'P07_WIN_NO_RELEASE_BUILDS_NO_BINARY_ARTIFACTS=YES'
