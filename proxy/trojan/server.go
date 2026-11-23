@@ -3,6 +3,7 @@ package trojan
 import (
 	"context"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -244,24 +245,64 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	return s.handleConnection(ctx, sessionPolicy, destination, clientReader, buf.NewWriter(conn), dispatcher)
 }
 
+// liB05TrojanOriginalSocketWriterQA cannot enable original physical
+// UDP Writer billing in production or for a non-loopback/non-Trojan user.
+// A matching environment is necessary but never sufficient: the actual
+// udp.Dispatcher additionally requires a real metered Reader callback.
+func liB05TrojanOriginalSocketWriterQA(in *session.Inbound) bool {
+	if in == nil || in.Name != "trojan" ||
+		!strings.HasPrefix(in.Tag, "Trojan_127.0.0.1_") {
+		return false
+	}
+	for _, name := range []string{
+		"QA_ALL13_REAL_NATIVE_STRICT_WAL",
+		"XRAYR_LI_B05_STRICT",
+		"XRAYR_LI_B05_PUBLIC_MULTI_NODE",
+		"XRAYR_LI_B05_PUBLIC_MULTI_WRITER_ACK",
+		"XRAYR_LI_B05_PUBLIC_MULTI_13_NATIVE_QA",
+		"XRAYR_LI_B05_PUBLIC_MULTI_13_NATIVE_WRITER_ACK",
+		"XRAYR_LI_B05_ALL13_UDP_TUNNEL_LOOPBACK_QA",
+		"XRAYR_LI_B05_ALL13_UDP_TUNNEL_WRITER_ACK",
+	} {
+		if os.Getenv(name) != "1" {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleUDPPayload(ctx context.Context, sessionPolicy policy.Session, clientReader *PacketReader, clientWriter *PacketWriter, dispatcher routing.Dispatcher) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
 	defer timer.SetTimeout(0)
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+	// The ordinary upstream callback is void, so it cannot return a
+	// physically confirmed encrypted Trojan UDP socket Writer receipt.
+	// Only the exact nonproduction, authenticated loopback all13 gate may
+	// use the existing fork's post-Writer callback Dispatcher. Its metered
+	// Reader MUST provide LiOnWriteAccepted/Failed or the UDP Dispatcher
+	// fails closed before any unverified socket response.
+	writeResponse := func(ctx context.Context, packet *udp_proto.Packet) error {
 		udpPayload := packet.Payload
 		if udpPayload.UDP == nil {
 			udpPayload.UDP = &packet.Source
 		}
-
 		if err := clientWriter.WriteMultiBuffer(buf.MultiBuffer{udpPayload}); err != nil {
 			errors.LogWarningInner(ctx, err, "failed to write response")
 			cancel()
-		} else {
-			timer.Update()
+			return err
 		}
-	})
+		timer.Update()
+		return nil
+	}
+	var udpServer *udp.Dispatcher
+	if liB05TrojanOriginalSocketWriterQA(session.InboundFromContext(ctx)) {
+		udpServer = udp.NewDispatcherWithFinalWriterReceipt(dispatcher, writeResponse)
+	} else {
+		udpServer = udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+			_ = writeResponse(ctx, packet)
+		})
+	}
 	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)

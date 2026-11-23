@@ -1,0 +1,100 @@
+name: QA P07 Windows entire Go test suite upstream main versus native candidate once
+on:
+  push:
+    branches: [integration/p07-native-core-6737-on-latest-main-20261122]
+    paths: [.github/workflows/qa-p07-windows-full-base-vs-candidate-once-20261123.yml]
+permissions: {contents: read}
+concurrency:
+  group: p07-windows-full-base-v-candidate-one-host-20261123
+  cancel-in-progress: false
+jobs:
+  compare_entire_windows_go_suite_same_host:
+    if: >-
+      github.repository == 'Lison-Li/Xray-core' &&
+      github.ref == 'refs/heads/integration/p07-native-core-6737-on-latest-main-20261122' &&
+      github.event.head_commit.message == '[qa-p07-windows-geodat-regex-corrected-once-20261123]'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      CGO_ENABLED: '0'
+      GOPROXY: https://proxy.golang.org|direct
+      GOSUMDB: sum.golang.org
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fab1029c3629551e80e64812793353b5fe0cc885
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 0091c4bc88cb23dc24e360dd0ce3b053f6eaa93d
+          path: base
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Full Windows suite on both exact refs, fail closed, zero release artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows') { throw 'Windows required' }
+          if ((& go version).Trim() -ne 'go version go1.27.4 windows/amd64') { throw 'Go version/architecture mismatch' }
+          $results = @{}
+          $spec = @(@{label='candidate';sha='fab1029c3629551e80e64812793353b5fe0cc885'},@{label='base';sha='0091c4bc88cb23dc24e360dd0ce3b053f6eaa93d'})
+          # The generic upstream test workflow restores GeoData before go test.
+          # This isolated two-checkout QA must supply identical verified data to BOTH refs.
+          $ProgressPreference = 'SilentlyContinue'
+          $dataSpecs = @(
+            @{ name = 'geoip.dat'; path = 'geoip/geoip-lite.dat' },
+            @{ name = 'geosite.dat'; path = 'geosite/geosite.dat' }
+          )
+          foreach ($data in $dataSpecs) {
+            $url = 'https://raw.githubusercontent.com/XTLS/Xray-rules-dat/release/' + $data.path
+            $sumResponse = Invoke-WebRequest -Uri ($url + '.sha256sum') -UseBasicParsing -TimeoutSec 120
+            $hashMatch = [regex]::Match([string]$sumResponse.Content, '^[0-9A-Fa-f]{64}(?=[ \t])')
+            if (-not $hashMatch.Success) { throw ('Missing trustworthy GeoData SHA-256 for ' + $data.name) }
+            $expected = $hashMatch.Value.ToLowerInvariant()
+            $download = Join-Path $env:RUNNER_TEMP ('p07-verified-' + $data.name)
+            Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $download -TimeoutSec 180
+            if ((Get-Item -LiteralPath $download).Length -le 0) { throw ('Empty ' + $data.name) }
+            $actual = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) { throw ('GeoData SHA-256 mismatch: ' + $data.name) }
+            foreach ($item in $spec) {
+              $resourceDir = Join-Path (Join-Path $env:GITHUB_WORKSPACE $item.label) 'resources'
+              New-Item -ItemType Directory -Path $resourceDir -Force | Out-Null
+              $destination = Join-Path $resourceDir $data.name
+              Copy-Item -LiteralPath $download -Destination $destination -Force
+              $copied = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($copied -ne $expected) { throw ('GeoData copy drift: ' + $item.label + '/' + $data.name) }
+              Write-Host ('P07_FULL_WIN_IDENTICAL_GEODATA_'+$item.label.ToUpper()+'_'+$data.name.ToUpper()+'='+$copied)
+            }
+          }
+          Write-Host 'P07_FULL_WIN_BASE_AND_CANDIDATE_GEODATA_SHA256_VERIFIED=PASS'
+          foreach ($item in $spec) {
+            $folder = Join-Path $env:GITHUB_WORKSPACE $item.label
+            Push-Location $folder
+            try {
+              if ((& git rev-parse HEAD).Trim() -ne $item.sha) { throw ('Git source drift: '+$item.label) }
+              Write-Host ('P07_FULL_WIN_GIT_SOURCE_'+$item.label.ToUpper()+'='+ $item.sha)
+              $log = Join-Path $env:RUNNER_TEMP ('p07-full-win-'+$item.label+'.log')
+              & go test -timeout 20m -count=1 ./... 2>&1 | Tee-Object -FilePath $log
+              $rc = $LASTEXITCODE
+              $results[$item.label] = $rc
+              Write-Host ('P07_FULL_WIN_ALL_PACKAGES_'+$item.label.ToUpper()+'_EXIT='+$rc)
+              if ($rc -ne 0) {
+                $failures=@(Select-String -Path $log -Pattern '^--- FAIL:|^FAIL\s|^panic:|^fatal error:' | Select-Object -First 25 | ForEach-Object { $_.Line.Trim() })
+                foreach ($failure in $failures) { Write-Host ('P07_FULL_WIN_FAILURE_'+$item.label.ToUpper()+'='+ $failure) }
+              }
+            } finally { Pop-Location }
+          }
+          if ($results.Count -ne 2) { throw 'Incomplete Windows full suites' }
+          Write-Host ('P07_FULL_WIN_BASE_EXIT='+$results['base'])
+          Write-Host ('P07_FULL_WIN_CANDIDATE_EXIT='+$results['candidate'])
+          if ($results['candidate'] -ne 0 -or $results['base'] -ne 0) { throw 'One or both source-pinned real full Windows suites failed; do not waive or merge' }
+          Write-Host 'P07_FULL_WIN_BASE_AND_NATIVE_CANDIDATE_ALL_GO_PACKAGES_SAME_HOST=PASS'
+          Write-Host 'P07_FULL_WIN_ARTIFACTS_ZERO_AND_NO_PRODUCT_RELEASE=YES'

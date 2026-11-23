@@ -192,15 +192,25 @@ func transferResponse(timer signal.ActivityUpdater, session *encoding.ServerSess
 	if err != nil {
 		return errors.New("failed to start decoding response").Base(err)
 	}
-	{
-		// Optimize for small response packet
-		data, err := input.ReadMultiBuffer()
-		if err != nil {
-			return err
-		}
+	// XrayR-Li's strict B05 reader reserves/fsyncs the *first* response
+	// before returning it. The upstream one-packet optimization used a
+	// direct ReadMultiBuffer / WriteMultiBuffer while output was still
+	// buffered, bypassing LiOnWriteAccepted and quarantining a genuine
+	// VMess downlink. For such a metered reader ONLY, flush the response
+	// header and disable buffering first; buf.Copy then acknowledges each
+	// chunk exclusively after the encrypted lower Writer returns.
+	// Non-metered VMess retains the exact upstream first-packet path.
+	if _, b05FinalWriterReader := input.(interface{ LiOnWriteAccepted(int32) error }); !b05FinalWriterReader {
+		{
+			// Optimize for small response packet
+			data, err := input.ReadMultiBuffer()
+			if err != nil {
+				return err
+			}
 
-		if err := bodyWriter.WriteMultiBuffer(data); err != nil {
-			return err
+			if err := bodyWriter.WriteMultiBuffer(data); err != nil {
+				return err
+			}
 		}
 	}
 

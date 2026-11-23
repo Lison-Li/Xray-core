@@ -20,6 +20,10 @@ import (
 
 type ResponseCallback func(ctx context.Context, packet *udp.Packet)
 
+// B05 QA-only final encrypted physical UDP packet socket Writer outcome.
+// The original void ResponseCallback cannot provide a durable receipt.
+type FinalWriterResponseCallback func(ctx context.Context, packet *udp.Packet) error
+
 type connEntry struct {
 	link   *transport.Link
 	timer  *signal.ActivityTimer
@@ -44,11 +48,12 @@ func (c *connEntry) terminate() {
 
 type Dispatcher struct {
 	sync.RWMutex
-	conn       *connEntry
-	dispatcher routing.Dispatcher
-	callback   ResponseCallback
-	callClose  func() error
-	closed     bool
+	conn                *connEntry
+	dispatcher          routing.Dispatcher
+	callback            ResponseCallback
+	finalWriterCallback FinalWriterResponseCallback
+	callClose           func() error
+	closed              bool
 }
 
 func NewDispatcher(dispatcher routing.Dispatcher, callback ResponseCallback) *Dispatcher {
@@ -56,6 +61,12 @@ func NewDispatcher(dispatcher routing.Dispatcher, callback ResponseCallback) *Di
 		dispatcher: dispatcher,
 		callback:   callback,
 	}
+}
+
+// NewDispatcherWithFinalWriterReceipt requires a strictly authenticated
+// original billing Reader at runtime. Legacy NewDispatcher remains unchanged.
+func NewDispatcherWithFinalWriterReceipt(dispatcher routing.Dispatcher, callback FinalWriterResponseCallback) *Dispatcher {
+	return &Dispatcher{dispatcher: dispatcher, finalWriterCallback: callback}
 }
 
 func (v *Dispatcher) RemoveRay() {
@@ -101,7 +112,7 @@ func (v *Dispatcher) getInboundRay(ctx context.Context, dest net.Destination) (*
 
 	entry.timer = signal.CancelAfterInactivity(ctx, entry.terminate, time.Minute)
 	v.conn = entry
-	go handleInput(ctx, entry, dest, v.callback, v.callClose)
+	go handleInput(ctx, entry, dest, v.callback, v.finalWriterCallback, v.callClose)
 	return entry, nil
 }
 
@@ -124,7 +135,7 @@ func (v *Dispatcher) Dispatch(ctx context.Context, destination net.Destination, 
 	}
 }
 
-func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, callback ResponseCallback, callClose func() error) {
+func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, callback ResponseCallback, finalWriterCallback FinalWriterResponseCallback, callClose func() error) {
 	defer func() {
 		conn.Close()
 		if callClose != nil {
@@ -150,14 +161,50 @@ func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, cal
 			return
 		}
 		timer.Update()
-		for _, b := range mb {
+		if finalWriterCallback == nil {
+			for _, b := range mb {
+				if b.UDP != nil {
+					dest = *b.UDP
+				}
+				callback(ctx, &udp.Packet{Payload: b, Source: dest})
+			}
+			continue
+		}
+		// Strict native UDP cannot reach any original socket unless the
+		// real routed Reader can provide both post-Writer WAL callbacks.
+		receipt, ok := input.(interface {
+			LiOnWriteAccepted(int32) error
+			LiOnWriteFailed(error)
+		})
+		if !ok {
+			buf.ReleaseMulti(mb)
+			errors.LogWarning(ctx, "B05 original native UDP socket Writer: no authenticated metered Reader")
+			return
+		}
+		acceptedBytes := mb.Len()
+		if acceptedBytes <= 0 {
+			buf.ReleaseMulti(mb)
+			receipt.LiOnWriteFailed(io.ErrNoProgress)
+			return
+		}
+		for i, b := range mb {
 			if b.UDP != nil {
 				dest = *b.UDP
 			}
-			callback(ctx, &udp.Packet{
-				Payload: b,
-				Source:  dest,
-			})
+			if err := finalWriterCallback(ctx, &udp.Packet{Payload: b, Source: dest}); err != nil {
+				receipt.LiOnWriteFailed(err)
+				for _, remaining := range mb[i+1:] {
+					remaining.Release()
+				}
+				errors.LogWarningInner(ctx, err, "B05 original native UDP encrypted packet socket write failed")
+				return
+			}
+		}
+		// Confirm only AFTER every original encrypted socket Write returned.
+		if err := receipt.LiOnWriteAccepted(acceptedBytes); err != nil {
+			receipt.LiOnWriteFailed(err)
+			errors.LogWarningInner(ctx, err, "B05 native UDP durable receipt failed")
+			return
 		}
 	}
 }
