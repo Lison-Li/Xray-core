@@ -1,14 +1,11 @@
 name: Build and Release
 
 on:
+  # Multi-target release builds are never automatic on push/PR.
+  # Ordinary source regression stays in test.yml; release artifacts stay opt-in.
   workflow_dispatch:
   release:
     types: [published]
-  push:
-    branches-ignore:
-      - 'integration/p07-*'
-  pull_request:
-    types: [opened, synchronize, reopened]
 
 jobs:
   check-assets:
@@ -289,8 +286,10 @@ jobs:
           file_glob: true
 
       - name: Upload files to Artifacts
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 1
           name: Xray-${{ env.ASSET_NAME }}
           path: |
             ./build_assets/*
