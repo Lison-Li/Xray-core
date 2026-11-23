@@ -12,7 +12,7 @@ jobs:
     if: >-
       github.repository == 'Lison-Li/Xray-core' &&
       github.ref == 'refs/heads/integration/p07-native-core-6737-on-latest-main-20261122' &&
-      github.event.head_commit.message == '[qa-p07-windows-geodata-verified-base-candidate-once-20261123]'
+      github.event.head_commit.message == '[qa-p07-windows-geodat-regex-corrected-once-20261123]'
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -56,7 +56,7 @@ jobs:
           foreach ($data in $dataSpecs) {
             $url = 'https://raw.githubusercontent.com/XTLS/Xray-rules-dat/release/' + $data.path
             $sumResponse = Invoke-WebRequest -Uri ($url + '.sha256sum') -UseBasicParsing -TimeoutSec 120
-            $hashMatch = [regex]::Match([string]$sumResponse.Content, '^(?i:[0-9a-f]{64})(?=\\s)')
+            $hashMatch = [regex]::Match([string]$sumResponse.Content, '^[0-9A-Fa-f]{64}(?=[ \t])')
             if (-not $hashMatch.Success) { throw ('Missing trustworthy GeoData SHA-256 for ' + $data.name) }
             $expected = $hashMatch.Value.ToLowerInvariant()
             $download = Join-Path $env:RUNNER_TEMP ('p07-verified-' + $data.name)
